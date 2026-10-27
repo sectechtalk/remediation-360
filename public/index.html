@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>r360 - Remediation 360</title>
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<div id="banners"></div>
+<header class="top">
+  <span class="brand">r360</span>
+  <nav id="nav">
+    <a href="#remediations" data-view="remediations">Remediations</a>
+    <a href="#rollouts" data-view="rollouts">Rollouts</a>
+    <a href="#fleet" data-view="fleet">Fleet</a>
+    <a href="#emergency" data-view="emergency">Emergency</a>
+    <a href="#certificates" data-view="certificates">Certificates</a>
+    <a href="#audit" data-view="audit">Audit</a>
+    <a href="#settings" data-view="settings">Settings</a>
+  </nav>
+  <span class="spacer"></span>
+  <span id="who"></span>
+  <form method="post" action="/auth/signout"><button class="btn" type="submit">Sign out</button></form>
+</header>
+<main id="view"></main>
+</body>
+</html>
