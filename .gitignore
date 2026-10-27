@@ -1,0 +1,16 @@
+# Never commit key material or local output
+*.pem
+*.pfx
+*.key
+*.p12
+*.cer.tmp
+.env
+.env.*
+out/
+logs/
+*.log
+.vscode/
+.DS_Store
+Thumbs.db
+*.pre-*
+node_modules/

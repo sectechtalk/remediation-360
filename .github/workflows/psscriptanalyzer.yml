@@ -1,0 +1,37 @@
+name: PSScriptAnalyzer
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The job name is the status check name the ruleset requires: "PSScriptAnalyzer".
+  PSScriptAnalyzer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prereqs (PowerShell 7.4+, PSScriptAnalyzer)
+        shell: pwsh
+        run: |
+          if ($PSVersionTable.PSVersion -lt [version]'7.4') { throw "PowerShell 7.4+ required, found $($PSVersionTable.PSVersion)" }
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -MinimumVersion 1.22.0 -Scope CurrentUser -Force
+          Import-Module PSScriptAnalyzer
+          "PowerShell $($PSVersionTable.PSVersion); PSScriptAnalyzer $((Get-Module PSScriptAnalyzer).Version)"
+
+      - name: Invoke-ScriptAnalyzer (fails on Error or Warning)
+        shell: pwsh
+        run: |
+          $r = Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1
+          $r | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize -Wrap | Out-String -Width 300
+          foreach ($i in $r) { Write-Host "::$(if ($i.Severity -eq 'Error') {'error'} else {'warning'}) file=$($i.ScriptPath),line=$($i.Line)::$($i.RuleName): $($i.Message)" }
+          $bad = @($r | Where-Object { $_.Severity -in 'Error', 'Warning', 'ParseError' })
+          if ($bad.Count) { throw "$($bad.Count) PSScriptAnalyzer finding(s) at Error/Warning" }
+          'No Error/Warning findings.'

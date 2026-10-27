@@ -1,0 +1,38 @@
+:root { --bg:#121417; --panel:#1b1e23; --line:#2c313a; --text:#e6e8eb; --muted:#9aa3ad; --accent:#4c8dff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
+html[data-theme="light"] { --bg:#fff; --panel:#f5f6f8; --line:#d0d7de; --text:#1f2328; --muted:#59636e; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family: Inter, "Segoe UI", system-ui, sans-serif; font-size: 10pt; }
+.top { display:flex; align-items:center; gap:16px; padding:8px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+.top form { margin:0; }
+.brand { font-weight:700; }
+nav a { color:var(--muted); text-decoration:none; margin-right:12px; }
+nav a.active { color:var(--text); border-bottom:2px solid var(--accent); }
+.spacer { flex:1; }
+main { padding:16px; }
+main.center { max-width:640px; margin:10vh auto; }
+h1 { font-size:14pt; margin:0 0 8px; } h2 { font-size:11pt; margin:16px 0 8px; }
+.muted { color:var(--muted); }
+.banner { padding:6px 16px; font-weight:600; }
+.banner.testing { background:var(--bad); color:#fff; }
+.banner.warn { background:var(--warn); color:#000; }
+/* One button style for the whole app. Disabled buttons are greyed and say why in the tooltip. */
+.btn { display:inline-block; font:inherit; padding:4px 12px; border-radius:4px; border:1px solid var(--accent); background:transparent; color:var(--accent); cursor:pointer; text-decoration:none; }
+.btn:hover { background:var(--accent); color:#fff; }
+.btn:disabled, .btn[aria-disabled="true"] { border-color:var(--line); color:var(--muted); background:transparent; cursor:not-allowed; }
+.toolbar { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+.tablewrap { overflow-x:auto; border:1px solid var(--line); }
+table { border-collapse:collapse; font-size:9pt; table-layout:fixed; min-width:100%; }
+th, td { border-bottom:1px solid var(--line); padding:4px 8px; text-align:left; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; vertical-align:top; }
+th { position:relative; background:var(--panel); user-select:none; }
+th .sort { cursor:pointer; }
+th .flt { cursor:pointer; margin-left:4px; color:var(--muted); }
+th .flt.on { color:var(--accent); }
+th .grip { position:absolute; right:0; top:0; width:6px; height:100%; cursor:col-resize; }
+.menu { position:absolute; z-index:10; background:var(--panel); border:1px solid var(--line); padding:8px; max-height:300px; overflow:auto; min-width:180px; font-weight:400; }
+.menu label { display:block; white-space:nowrap; }
+.pill { display:inline-block; padding:0 6px; border-radius:8px; font-size:8.5pt; border:1px solid currentColor; }
+.ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+.cards { display:flex; gap:12px; flex-wrap:wrap; }
+.card { background:var(--panel); border:1px solid var(--line); padding:12px; min-width:280px; flex:1; }
+dl.kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; } dl.kv dt { color:var(--muted); } dl.kv dd { margin:0; word-break:break-all; }
+.error { color:var(--bad); }
