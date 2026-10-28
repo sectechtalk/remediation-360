@@ -26,7 +26,7 @@ test('GitHub App JWT is signed by Key Vault (RS256), token narrowed to read, cat
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const blobs = {
     m: JSON.stringify({ displayName: 'STT - Remediation Canary', runAs: 'system' }), d: 'exit 0', r: 'fix',
-    a: JSON.stringify({ version: 1, approvers: [{ entraObjectId: '00000000-0000-4000-8000-0000000000b3', upn: 'admin@contoso.com', roles: ['author', 'approver'] }] }),
+    a: JSON.stringify({ version: 1, approvers: [{ entraObjectId: '94540000-0000-4000-8000-0000000000c3', upn: 'admin@contoso.com', roles: ['author', 'approver'] }] }),
   };
   let jwt = null, tokenBody = null;
   const fetcher = async (url, opt = {}) => {
@@ -51,7 +51,7 @@ test('GitHub App JWT is signed by Key Vault (RS256), token narrowed to read, cat
   const gh = createGitHubApp({ config, miToken: async r => { assert.equal(r, 'https://vault.azure.net'); return 'VT'; }, fetcher });
   const cat = await gh.catalog();
   assert.equal(cat.items.length, 1); assert.equal(cat.items[0].detect, 'exit 0'); assert.equal(cat.message, 'msg');
-  assert.equal(cat.approvers[0].entraObjectId, '00000000-0000-4000-8000-0000000000b3');
+  assert.equal(cat.approvers[0].entraObjectId, '94540000-0000-4000-8000-0000000000c3');
   assert.deepEqual(tokenBody, { repositories: ['remediations'], permissions: { contents: 'read', metadata: 'read' } });
   const [h, p, s] = jwt.split('.');
   assert.equal(JSON.parse(Buffer.from(p, 'base64url')).iss, '1234567');
@@ -63,7 +63,7 @@ test('approvers.json fails closed', () => {
   assert.throws(() => parseApprovers(null), /missing/);
   assert.throws(() => parseApprovers('{"version":2,"approvers":[]}'), /version/);
   assert.throws(() => parseApprovers('{"version":1,"approvers":[{"entraObjectId":"x"}]}'), /entraObjectId/);
-  assert.throws(() => parseApprovers('{"version":1,"approvers":[{"entraObjectId":"00000000-0000-4000-8000-0000000000b3","roles":["god"]}]}'), /unknown role/);
+  assert.throws(() => parseApprovers('{"version":1,"approvers":[{"entraObjectId":"94540000-0000-4000-8000-0000000000c3","roles":["god"]}]}'), /unknown role/);
 });
 
 test('graph pages through nextLink and waits on 429 automatically', async () => {
@@ -86,7 +86,7 @@ test('auth helpers', () => {
   assert.match(checkCallback(p, { state: 'x', code: '0123456789' }), /did not match/);
   assert.equal(checkCallback(p, { state: 's', code: '0123456789' }), null);
   assert.throws(() => userFromClaims({ tid: 'other' }, { tenantId: ENV.ENTRA_TENANT_ID, clientId: ENV.R360_WEB_CLIENT_ID }), /tenant/);
-  assert.equal(userFromClaims({ tid: ENV.ENTRA_TENANT_ID, aud: ENV.R360_WEB_CLIENT_ID, oid: '00000000-0000-4000-8000-0000000000b3', preferred_username: 'a@b' }, { tenantId: ENV.ENTRA_TENANT_ID, clientId: ENV.R360_WEB_CLIENT_ID }).oid, '00000000-0000-4000-8000-0000000000b3');
+  assert.equal(userFromClaims({ tid: ENV.ENTRA_TENANT_ID, aud: ENV.R360_WEB_CLIENT_ID, oid: '94540000-0000-4000-8000-0000000000c3', preferred_username: 'a@b' }, { tenantId: ENV.ENTRA_TENANT_ID, clientId: ENV.R360_WEB_CLIENT_ID }).oid, '94540000-0000-4000-8000-0000000000c3');
   assert.equal(parseCookies('a=1; __Host-r360=abc')[SESSION_COOKIE], 'abc');
 });
 
@@ -101,7 +101,8 @@ test('HTTP: unauthenticated users go to Entra sign-in, APIs return 401, read-onl
   const auth = { beginSignIn: async () => 'https://login.microsoftonline.com/t/oauth2/v2.0/authorize?client_id=x', graphToken: async () => 'GT', completeSignIn: async (s) => { s.user = { oid: 'o', upn: 'u', name: 'n' }; }, signOut: async () => {} };
   const data = { remediations: async t => ({ token: t === 'GT', rows: [] }), fleet: async () => ({ rows: [] }), certificates: async () => ({}), pim: async () => ({}) };
   const github = { catalog: async () => ({ approvers: [{ entraObjectId: 'o', roles: ['approver'] }] }) };
-  await withServer({ sessions, auth, data, github }, async base => {
+  const audit = { record: async e => e, list: async () => ({ rows: [], truncated: false }) };
+  await withServer({ sessions, auth, data, github, audit }, async base => {
     let r = await fetch(`${base}/`, { redirect: 'manual' });
     assert.equal(r.status, 302); assert.equal(r.headers.get('location'), '/auth/signin');
     assert.match(r.headers.get('content-security-policy'), /default-src 'self'/);
@@ -117,7 +118,9 @@ test('HTTP: unauthenticated users go to Entra sign-in, APIs return 401, read-onl
     const h = { cookie: `__Host-r360=${sid}` };
     r = await fetch(`${base}/api/remediations`, { headers: h }); assert.equal(r.status, 200); assert.equal((await r.json()).token, true);
     r = await fetch(`${base}/api/me`, { headers: h }); assert.deepEqual((await r.json()).roles, ['approver']);
-    r = await fetch(`${base}/api/remediations`, { method: 'POST', headers: h }); assert.equal(r.status, 404);
+    r = await fetch(`${base}/api/remediations`, { method: 'POST', headers: h }); assert.equal(r.status, 403); // no origin / CSRF token: blocked before routing
+    const csrf = (await (await fetch(`${base}/api/me`, { headers: h })).json()).csrf;
+    r = await fetch(`${base}/api/remediations`, { method: 'POST', headers: { ...h, origin: config.publicUrl, 'x-r360-csrf': csrf, 'content-type': 'application/json' }, body: '{}' }); assert.equal(r.status, 404);
     r = await fetch(`${base}/`, { headers: h }); assert.equal(r.status, 200); assert.match(await r.text(), /Remediations/);
     r = await fetch(`${base}/api/settings`, { headers: h }); assert.ok(!/secret/i.test(await r.text()));
     r = await fetch(`${base}/auth/signout`, { method: 'POST', redirect: 'manual', headers: { ...h, origin: 'https://evil.example.com' } }); assert.equal(r.status, 403);

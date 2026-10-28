@@ -1,4 +1,4 @@
-#Requires -Version 7.4
+﻿#Requires -Version 7.4
 # Shared helpers for the r360 bootstrap scripts. Delegated only, no secrets.
 Set-StrictMode -Version Latest
 
@@ -51,10 +51,15 @@ function Get-R360Config {
             ENTRA_TENANT_ID               = $script:TenantId
             R360_FOUR_EYES                = 'testing'
             R360_PIM_MODE                 = 'warn'
+            R360_CANARY_GROUP_ID          = '00000000-0000-4000-8000-0000000000b2'
+            R360_MAX_OPEN_CHANGES         = '5'
             R360_ELEVATION_TTL_MINUTES    = '480'
             R360_EMERGENCY_WINDOW_MINUTES = '240'
             R360_EMERGENCY_MAX_DEVICES    = '1'
             R360_CANARY_DEVICE            = 'DEVICE01'
+            R360_AUDIT_STORAGE_ACCOUNT    = "str360$suffix"
+            R360_AUDIT_TABLE              = 'r360audit'
+            R360_AUDIT_EXPORT_CONTAINER   = 'r360audit-export'
         }
         # Every Graph scope the bootstrap uses (delegated, signed-in admin).
         BootstrapGraphScopes = @('Application.ReadWrite.All', 'DelegatedPermissionGrant.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All',
@@ -305,4 +310,17 @@ function Set-R360RoleAssignment {
     Invoke-R360Az -Arguments @('role', 'assignment', 'create', '--assignee-object-id', $PrincipalId, '--assignee-principal-type', $PrincipalType, '--role', $Role, '--scope', $Scope) | Out-Null
 }
 
+function Get-R360GitHubOidcSubject {
+    # The OIDC `sub` claim GitHub actually issues for a branch of the remediations repo. Repos created after 2026-07-15 use the
+    # immutable form repo:OWNER@OWNER_ID/REPO@REPO_ID; older ones the name form. Asking the repo's OIDC settings avoids guessing.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param([string]$Branch = 'main')
+    $cfg = Get-R360Config
+    $c = Invoke-R360Gh -Arguments @('api', "repos/$($cfg.GitHubOrg)/$($cfg.RemediationsRepo)/actions/oidc/customization/sub")
+    if (-not $c -or $c -is [string]) { throw "Could not read the OIDC subject settings of $($cfg.GitHubOrg)/$($cfg.RemediationsRepo) (gh needs repo admin)." }
+    if (-not $c.use_default) { throw 'The repo uses a custom OIDC subject claim template; r360 only supports the default template.' }
+    $prefix = if ($c.PSObject.Properties['sub_claim_prefix'] -and $c.sub_claim_prefix) { $c.sub_claim_prefix } else { "repo:$($cfg.GitHubOrg)/$($cfg.RemediationsRepo)" }
+    "${prefix}:ref:refs/heads/$Branch"
+}
 Export-ModuleMember -Function *-R360*

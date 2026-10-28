@@ -5,11 +5,13 @@ import { createGraph } from './graph.mjs';
 import { createGitHubApp } from './github.mjs';
 import { createData } from './data.mjs';
 import { createApp } from './app.mjs';
+import { createAudit } from './audit.mjs';
 
 const config = loadConfig();
 const miToken = createManagedIdentity({ clientId: config.miClientId });
 const github = createGitHubApp({ config, miToken });
-const app = createApp({ config, sessions: new SessionStore(), auth: createAuth({ config, miToken }), data: createData({ graph: createGraph(), github, config }), github });
+const audit = createAudit({ config, miToken });
+const app = createApp({ config, sessions: new SessionStore(), auth: createAuth({ config, miToken }), data: createData({ graph: createGraph(), github, config }), github, audit });
 
 app.listen(config.port, config.host, () => console.log(`r360 ${config.imageTag} listening on ${config.port}`));
 
@@ -18,5 +20,6 @@ app.listen(config.port, config.host, () => console.log(`r360 ${config.imageTag} 
 (async () => {
   const step = async (name, fn) => { try { console.log(`selfcheck ${name}: PASS ${await fn()}`); } catch (e) { console.log(`selfcheck ${name}: FAIL ${e.message}`); } };
   await step('mi-fic-token', async () => (await miToken(FIC_AUDIENCE)) ? 'token issued' : 'empty');
+  await step('audit-store', async () => { const r = await audit.list({ limit: 1 }); return `table ${config.auditTable} readable on ${config.auditAccount}, write app ${config.writeClientId ? 'configured' : 'NOT configured'}, ${r.rows.length ? 'has events' : 'empty'}`; });
   await step('github-app', async () => { const c = await github.catalog(); return `main ${c.sha.slice(0, 8)}, ${c.items.length} remediation(s), approvers ${c.approvers ? c.approvers.length : 'INVALID'}`; });
 })();

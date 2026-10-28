@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { ConfidentialClientApplication, CryptoProvider } from '@azure/msal-node';
 import { FIC_AUDIENCE } from './identity.mjs';
 
@@ -9,6 +9,8 @@ export const GRAPH_READ_SCOPES = ['User.Read', 'DeviceManagementConfiguration.Re
 export const SESSION_COOKIE = '__Host-r360';
 export const SESSION_TTL = 8 * 60 * 60 * 1000;
 export const PENDING_TTL = 10 * 60 * 1000;
+// The write app (r360-write) is requested ONLY for Intune script writes. It never carries the read scopes.
+export const WRITE_SCOPES = ['https://graph.microsoft.com/DeviceManagementScripts.ReadWrite.All'];
 
 export function parseCookies(header) {
   const out = {};
@@ -24,7 +26,7 @@ export class SessionStore {
   create() {
     if (this.map.size >= this.max) this.sweep();
     const id = randomBytes(32).toString('base64url');
-    const s = { id, created: this.now(), seen: this.now(), cache: new Map() };
+    const s = { id, created: this.now(), seen: this.now(), cache: new Map(), csrf: randomBytes(32).toString('base64url'), write: null };
     this.map.set(id, s);
     return s;
   }
@@ -36,6 +38,8 @@ export class SessionStore {
     return s;
   }
   destroy(id) { this.map.delete(id); }
+  // True when a live session on this replica holds the write session for this person that ends at untilMs.
+  hasWrite(oid, untilMs) { for (const s of this.map.values()) if (s.write && s.write.oid === oid && s.write.until === untilMs && s.write.until > this.now()) return true; return false; }
   sweep() { for (const [id, s] of this.map) if (this.now() - s.created > this.ttl) this.map.delete(id); if (this.map.size >= this.max) this.map.delete(this.map.keys().next().value); }
 }
 
@@ -58,24 +62,53 @@ export function userFromClaims(claims, { tenantId, clientId }) {
   return { oid: claims.oid.toLowerCase(), upn: claims.preferred_username || '', name: claims.name || claims.preferred_username || '' };
 }
 
-export function createAuth({ config, miToken }) {
-  const cca = new ConfidentialClientApplication({
-    auth: { clientId: config.webClientId, authority: `https://login.microsoftonline.com/${config.tenantId}`, clientAssertion: async () => miToken(FIC_AUDIENCE) },
-    system: { loggerOptions: { piiLoggingEnabled: false, logLevel: 0, loggerCallback: () => {} } },
+const safeEq = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
+// Claims accepted only from the ID token MSAL redeemed for a given app in our tenant, bound to this browser's request by nonce.
+function checkNonce(claims, pending) {
+  if (!pending?.nonce || !safeEq(claims?.nonce, pending.nonce)) throw Object.assign(new Error('The sign-in response did not match this browser session.'), { status: 400 });
+}
+
+// `msal` lets tests swap the network and authority metadata; production passes nothing.
+export function createAuth({ config, miToken, msal = {} }) {
+  const makeCca = clientId => new ConfidentialClientApplication({
+    auth: { clientId, authority: msal.authority || `https://login.microsoftonline.com/${config.tenantId}`, clientAssertion: async () => miToken(FIC_AUDIENCE), ...(msal.auth || {}) },
+    system: { loggerOptions: { piiLoggingEnabled: false, logLevel: 0, loggerCallback: () => {} }, ...(msal.system || {}) },
   });
+  const cca = makeCca(config.webClientId);
+  // Separate client app, separate token cache: the write token can never be mixed up with the read token.
+  const writeCca = config.writeClientId ? makeCca(config.writeClientId) : null;
   const crypto = new CryptoProvider();
+  const removeAccount = async (client, homeAccountId) => {
+    const account = homeAccountId && client && await client.getTokenCache().getAccountByHomeId(homeAccountId);
+    if (account) await client.getTokenCache().removeAccount(account);
+  };
+  const begin = async (client, session, key, { scopes, redirectUri, extra = {} }) => {
+    const { verifier, challenge } = await crypto.generatePkceCodes();
+    const pending = { state: randomBytes(24).toString('hex'), nonce: randomBytes(24).toString('hex'), verifier, created: Date.now() };
+    session[key] = pending;
+    return client.getAuthCodeUrl({ scopes, redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', state: pending.state, nonce: pending.nonce, ...extra });
+  };
+  const redeem = async (client, session, key, query, { scopes, redirectUri }) => {
+    const problem = checkCallback(session[key], query);
+    const pending = session[key];
+    session[key] = null;
+    if (problem) throw Object.assign(new Error(problem), { status: 400 });
+    // The nonce goes in both places msal-node reads it (request and authorization-code payload; v4 validates it inside the call).
+    const result = await client.acquireTokenByCode(
+      { code: query.code, scopes, redirectUri, codeVerifier: pending.verifier, state: query.state, nonce: pending.nonce },
+      { code: query.code, state: query.state, nonce: pending.nonce });
+    try { checkNonce(result.idTokenClaims, pending); }
+    catch (e) { await removeAccount(client, result.account?.homeAccountId).catch(() => {}); throw e; }
+    return result;
+  };
   return {
+    writeConfigured: Boolean(writeCca),
     async beginSignIn(session) {
-      const { verifier, challenge } = await crypto.generatePkceCodes();
-      session.pending = { state: randomBytes(24).toString('hex'), verifier, created: Date.now() };
-      return cca.getAuthCodeUrl({ scopes: GRAPH_READ_SCOPES, redirectUri: config.redirectUri, codeChallenge: challenge, codeChallengeMethod: 'S256', state: session.pending.state, prompt: 'select_account' });
+      return begin(cca, session, 'pending', { scopes: GRAPH_READ_SCOPES, redirectUri: config.redirectUri, extra: { prompt: 'select_account' } });
     },
     async completeSignIn(session, query) {
-      const problem = checkCallback(session.pending, query);
-      const pending = session.pending;
-      session.pending = null;
-      if (problem) throw Object.assign(new Error(problem), { status: 400 });
-      const result = await cca.acquireTokenByCode({ code: query.code, scopes: GRAPH_READ_SCOPES, redirectUri: config.redirectUri, codeVerifier: pending.verifier, state: query.state });
+      const result = await redeem(cca, session, 'pending', query, { scopes: GRAPH_READ_SCOPES, redirectUri: config.redirectUri });
       session.user = userFromClaims(result.idTokenClaims, { tenantId: config.tenantId, clientId: config.webClientId });
       session.homeAccountId = result.account.homeAccountId;
       return session.user;
@@ -86,9 +119,28 @@ export function createAuth({ config, miToken }) {
       try { return (await cca.acquireTokenSilent({ account, scopes: GRAPH_READ_SCOPES })).accessToken; }
       catch { throw Object.assign(new Error('Session expired. Sign in again.'), { status: 401 }); }
     },
+    // ---- write elevation (r360-write) ----
+    async beginElevate(session) {
+      if (!writeCca) throw Object.assign(new Error('The write app is not configured (R360_WRITE_CLIENT_ID).'), { status: 503 });
+      return begin(writeCca, session, 'writePending', { scopes: WRITE_SCOPES, redirectUri: config.writeRedirectUri, extra: { loginHint: session.user.upn || undefined } });
+    },
+    // Returns who the write token is for. The caller decides whether to accept it (the oid must equal the web session's).
+    async completeElevate(session, query) {
+      if (!writeCca) throw Object.assign(new Error('The write app is not configured.'), { status: 503 });
+      const result = await redeem(writeCca, session, 'writePending', query, { scopes: WRITE_SCOPES, redirectUri: config.writeRedirectUri });
+      const user = userFromClaims(result.idTokenClaims, { tenantId: config.tenantId, clientId: config.writeClientId });
+      return { oid: user.oid, upn: user.upn, homeAccountId: result.account.homeAccountId, acrs: result.idTokenClaims.acrs || null, accessToken: result.accessToken };
+    },
+    async writeToken(homeAccountId) {
+      const account = writeCca && await writeCca.getTokenCache().getAccountByHomeId(homeAccountId);
+      if (!account) throw Object.assign(new Error('The write session is gone. Elevate again.'), { status: 403 });
+      try { return (await writeCca.acquireTokenSilent({ account, scopes: WRITE_SCOPES })).accessToken; }
+      catch { throw Object.assign(new Error('The write session is gone. Elevate again.'), { status: 403 }); }
+    },
+    async endWrite(homeAccountId) { await removeAccount(writeCca, homeAccountId); },
     async signOut(session) {
-      const account = session.homeAccountId && await cca.getTokenCache().getAccountByHomeId(session.homeAccountId);
-      if (account) await cca.getTokenCache().removeAccount(account);
+      await removeAccount(cca, session.homeAccountId);
+      await removeAccount(writeCca, session.write?.homeAccountId);
     },
   };
 }

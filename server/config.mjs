@@ -2,7 +2,7 @@
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const REQUIRED = ['ENTRA_TENANT_ID', 'R360_WEB_CLIENT_ID', 'AZURE_CLIENT_ID', 'R360_PUBLIC_URL', 'R360_KEY_VAULT_URI',
-  'R360_GITHUB_APP_ID', 'R360_GITHUB_INSTALLATION_ID', 'R360_CODESIGN_THUMBPRINT'];
+  'R360_GITHUB_APP_ID', 'R360_GITHUB_INSTALLATION_ID', 'R360_CODESIGN_THUMBPRINT', 'R360_AUDIT_STORAGE_ACCOUNT'];
 
 // Fills derivable values: the Key Vault name set in Phase 0 (R360_KEY_VAULT) and the Container Apps default FQDN
 // (CONTAINER_APP_NAME + CONTAINER_APP_ENV_DNS_SUFFIX are injected by the platform).
@@ -22,8 +22,23 @@ export function loadConfig(rawEnv = process.env) {
   if (publicUrl.protocol !== 'https:') throw new Error('R360_PUBLIC_URL must be https');
   const vault = new URL(env.R360_KEY_VAULT_URI);
   if (vault.protocol !== 'https:' || !/^[a-z0-9-]{3,24}\.vault\.azure\.net$/i.test(vault.hostname)) throw new Error('R360_KEY_VAULT_URI must be https://<name>.vault.azure.net');
+  if (env.R360_WRITE_CLIENT_ID && !GUID.test(env.R360_WRITE_CLIENT_ID)) throw new Error('R360_WRITE_CLIENT_ID must be a GUID');
+  if (!/^[a-z0-9]{3,24}$/.test(env.R360_AUDIT_STORAGE_ACCOUNT)) throw new Error('R360_AUDIT_STORAGE_ACCOUNT must be a storage account name (3-24 lowercase letters and digits)');
+  const auditTable = env.R360_AUDIT_TABLE || 'r360audit';
+  const auditContainer = env.R360_AUDIT_EXPORT_CONTAINER || 'r360audit-export';
+  if (!/^[A-Za-z][A-Za-z0-9]{2,62}$/.test(auditTable)) throw new Error('R360_AUDIT_TABLE is not a valid table name');
+  if (!/^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){2,62}$/.test(auditContainer)) throw new Error('R360_AUDIT_EXPORT_CONTAINER is not a valid container name');
+  const ttl = Number(env.R360_ELEVATION_TTL_MINUTES || 480);
+  if (!Number.isInteger(ttl) || ttl < 1 || ttl > 480) throw new Error('R360_ELEVATION_TTL_MINUTES must be a whole number from 1 to 480');
   const thumb = String(env.R360_CODESIGN_THUMBPRINT).replace(/[^0-9a-f]/gi, '').toUpperCase();
   if (thumb.length !== 40) throw new Error('R360_CODESIGN_THUMBPRINT must be a SHA-1 thumbprint (40 hex)');
+  if (env.R360_CANARY_GROUP_ID && !GUID.test(env.R360_CANARY_GROUP_ID)) throw new Error('R360_CANARY_GROUP_ID must be a GUID');
+  if (env.R360_PROD_GROUP_ID && !GUID.test(env.R360_PROD_GROUP_ID)) throw new Error('R360_PROD_GROUP_ID must be a GUID');
+  if (env.R360_PROD_GROUP_ID && env.R360_CANARY_GROUP_ID && env.R360_PROD_GROUP_ID.toLowerCase() === env.R360_CANARY_GROUP_ID.toLowerCase()) throw new Error('R360_PROD_GROUP_ID must differ from R360_CANARY_GROUP_ID');
+  const soakDays = Number(env.R360_CANARY_SOAK_DAYS ?? 7);
+  if (!Number.isInteger(soakDays) || soakDays < 0 || soakDays > 90) throw new Error('R360_CANARY_SOAK_DAYS must be a whole number from 0 to 90');
+  const maxOpen = Number(env.R360_MAX_OPEN_CHANGES || 5);
+  if (!Number.isInteger(maxOpen) || maxOpen < 1 || maxOpen > 50) throw new Error('R360_MAX_OPEN_CHANGES must be a whole number from 1 to 50');
   const oneOf = (v, allowed, dflt) => { const x = String(v || dflt).toLowerCase(); if (!allowed.includes(x)) throw new Error(`invalid value ${v}; expected ${allowed.join('|')}`); return x; };
   return Object.freeze({
     tenantId: env.ENTRA_TENANT_ID,
@@ -31,6 +46,11 @@ export function loadConfig(rawEnv = process.env) {
     miClientId: env.AZURE_CLIENT_ID,
     publicUrl: publicUrl.origin,
     redirectUri: `${publicUrl.origin}/auth/callback`,
+    writeClientId: env.R360_WRITE_CLIENT_ID || '',
+    writeRedirectUri: `${publicUrl.origin}/auth/write/callback`,
+    auditAccount: env.R360_AUDIT_STORAGE_ACCOUNT,
+    auditTable,
+    auditContainer,
     vaultUri: `https://${vault.hostname}`,
     githubKeyName: env.R360_GITHUB_KEY_NAME || 'github-app-r360',
     githubAppId: String(env.R360_GITHUB_APP_ID),
@@ -41,9 +61,13 @@ export function loadConfig(rawEnv = process.env) {
     rootProfile: env.R360_ROOT_PROFILE || 'r360 - Code Signing - Trusted Root',
     publisherProfile: env.R360_PUB_PROFILE || 'r360 - Code Signing - Trusted Publisher',
     canaryDevice: env.R360_CANARY_DEVICE || 'DEVICE01',
+    canaryGroupId: (env.R360_CANARY_GROUP_ID || '').toLowerCase(),
+    prodGroupId: (env.R360_PROD_GROUP_ID || '').toLowerCase(),
+    canarySoakDays: soakDays,
+    maxOpenChanges: maxOpen,
     fourEyes: oneOf(env.R360_FOUR_EYES, ['testing', 'enforced'], 'testing'),
     pimMode: oneOf(env.R360_PIM_MODE, ['warn', 'enforce'], 'warn'),
-    elevationTtlMinutes: Number(env.R360_ELEVATION_TTL_MINUTES || 480),
+    elevationTtlMinutes: ttl,
     emergencyWindowMinutes: Number(env.R360_EMERGENCY_WINDOW_MINUTES || 240),
     emergencyMaxDevices: Number(env.R360_EMERGENCY_MAX_DEVICES || 1),
     port: Number(env.PORT || 8080),
@@ -58,7 +82,8 @@ export function publicSettings(c) {
     tenantId: c.tenantId, webClientId: c.webClientId, managedIdentityClientId: c.miClientId, publicUrl: c.publicUrl,
     keyVault: c.vaultUri, githubAppId: c.githubAppId, githubInstallationId: c.githubInstallationId, githubKey: c.githubKeyName,
     repo: `${c.repo}@${c.branch}`, codesignThumbprint: c.codesignThumbprint, rootProfile: c.rootProfile, publisherProfile: c.publisherProfile,
-    canaryDevice: c.canaryDevice, fourEyes: c.fourEyes, pimMode: c.pimMode, elevationTtlMinutes: c.elevationTtlMinutes,
+    writeClientId: c.writeClientId || null, auditStorage: c.auditAccount, auditTable: c.auditTable, auditExportContainer: c.auditContainer,
+    canaryDevice: c.canaryDevice, canaryGroupId: c.canaryGroupId || null, prodGroupId: c.prodGroupId || null, canarySoakDays: c.canarySoakDays, maxOpenChanges: c.maxOpenChanges, fourEyes: c.fourEyes, pimMode: c.pimMode, elevationTtlMinutes: c.elevationTtlMinutes,
     emergencyWindowMinutes: c.emergencyWindowMinutes, emergencyMaxDevices: c.emergencyMaxDevices, imageTag: c.imageTag,
   };
 }

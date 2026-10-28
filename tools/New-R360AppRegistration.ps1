@@ -5,7 +5,7 @@
     r360-ci-signer (GitHub Actions OIDC, signing only). Delegated permissions only, no stored credentials.
 .DESCRIPTION
     - r360-web and r360-write get a federated identity credential that trusts the user-assigned managed identity id-r360
-      (no secret, no certificate). r360-ci-signer trusts GitHub OIDC for your-org/remediations main only.
+      (no secret, no certificate). r360-ci-signer trusts GitHub OIDC for your-org/remediations main only, using the subject GitHub really issues (immutable form for newer repos; see Get-R360GitHubOidcSubject).
     - Scopes are resolved from the resource service principals' delegated (oauth2PermissionScopes) list only; an app role
       (application permission) can never be added.
     - Tenant-wide admin consent is granted in code (oauth2PermissionGrants, consentType AllPrincipals) as you, so there is
@@ -71,7 +71,7 @@ try {
                 Defender = @('Machine.Read', 'Machine.ReadWrite', 'Machine.LiveResponse', 'Machine.Isolate', 'Machine.Scan', 'Machine.RestrictExecution',
                     'Machine.CollectForensics', 'Machine.StopAndQuarantine', 'Library.Manage', 'Ti.ReadWrite') } }
         @{ Name = $cfg.AppCiSigner; Redirect = @(); AssignRequired = $false
-            Fic = @{ name = 'github-remediations-main'; issuer = 'https://token.actions.githubusercontent.com'; subject = "repo:$($cfg.GitHubOrg)/$($cfg.RemediationsRepo):ref:refs/heads/main" }
+            Fic = @{ name = 'github-remediations-main'; issuer = 'https://token.actions.githubusercontent.com'; subject = (Get-R360GitHubOidcSubject -Branch main) }
             Access = @{} }
     )
 

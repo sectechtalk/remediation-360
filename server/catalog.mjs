@@ -1,10 +1,20 @@
 import { createHash } from 'node:crypto';
 
 // Pure logic: repo vs Intune catalog and drift. Content is compared after normalization (BOM, CRLF, trailing space)
-// because git stores LF and the publish script uploads the Windows CRLF checkout.
+// because git stores LF and the publish script uploads the Windows CRLF checkout. The repo holds unsigned scripts and
+// Intune holds the CI-signed copies, so the trailing Authenticode block is removed before comparing: it is a signature
+// over the script, not part of its content (the signature itself is verified by Publish-Remediation.ps1 and on the device).
+const SIG_BLOCK = /(^|\n)# SIG # Begin signature block\n[\s\S]*?\n# SIG # End signature block[ \t]*(\n|$)/;
+export function stripSignature(text) {
+  if (text == null) return null;
+  const t = String(text).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const m = SIG_BLOCK.exec(t);
+  // Only a block that ends the file counts; the same text in the middle of a script is script content.
+  return m && t.slice(m.index + m[0].length).trim() === '' ? t.slice(0, m.index) : t;
+}
 export function normalizeScript(text) {
   if (text == null) return null;
-  return String(text).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').split('\n').map(l => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '');
+  return stripSignature(text).split('\n').map(l => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n+$/, '');
 }
 export const scriptHash = text => text == null ? null : createHash('sha256').update(normalizeScript(text), 'utf8').digest('hex');
 export function decodeIntuneScript(b64) {
