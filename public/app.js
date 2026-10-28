@@ -1,20 +1,27 @@
 import { renderTable } from './table.js';
+import { createChangesUi } from './changes.js';
 
-// r360 Phase 1: read-only. Each dataset has exactly one home page (no duplicated data).
+// Each dataset has exactly one home page (no duplicated data).
 const STUBS = { rollouts: ['Rollouts', 3, 'Canary run on DEVICE01, widen, retire, certificate profile management.'],
-  emergency: ['Emergency', 4, 'Two-person Defender and Intune actions, 4 hours, 1 device.'],
-  audit: ['Audit', 2, 'Audit viewer and export (table r360audit).'] };
+  emergency: ['Emergency', 4, 'Two-person Defender and Intune actions, 4 hours, 1 device.'] };
 const PT = { timeZone: 'America/Los_Angeles', dateStyle: 'medium', timeStyle: 'short' };
 export const fmtTime = v => v ? `${new Date(v).toLocaleString('en-US', PT)} PT` : '';
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.filter(k => k != null)); return e; };
 const pill = (text, cls) => el('span', { className: `pill ${cls}`, textContent: text });
 const view = () => document.getElementById('view');
 
-async function api(path, refresh) {
-  const r = await fetch(path + (refresh ? '?refresh=1' : ''), { headers: { Accept: 'application/json' } });
-  if (r.status === 401) { location.href = '/auth/signin'; throw new Error('Sign in required'); }
+const session = { csrf: '', me: null };
+// Navigation goes through one object so tests can observe it.
+export const nav = { reload: () => location.reload(), signin: () => { location.href = '/auth/signin'; } };
+async function api(path, refresh, { keepOn401 = false, ...init } = {}) {
+  const post = init.method === 'POST';
+  let r;
+  try {
+    r = await fetch(path + (refresh ? '?refresh=1' : ''), { ...init, signal: AbortSignal.timeout(60000), headers: { Accept: 'application/json', ...(post ? { 'Content-Type': 'application/json', 'X-R360-CSRF': session.csrf } : {}) }, body: post ? JSON.stringify(init.body || {}) : undefined });
+  } catch (e) { throw new Error(e.name === 'TimeoutError' ? 'The request timed out. Try again.' : e.message); }
+  if (r.status === 401) { if (!keepOn401) nav.signin(); throw Object.assign(new Error('Sign in required'), { status: 401 }); }
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  if (!r.ok) throw Object.assign(new Error(j.error || `HTTP ${r.status}`), { status: r.status, ...(Array.isArray(j.details) ? { details: j.details.map(String) } : {}) });
   return j;
 }
 function page(title, subtitle, loader) {
@@ -35,11 +42,17 @@ function page(title, subtitle, loader) {
 const statusCls = s => ({ 'In sync': 'ok', 'Drift': 'bad', 'Not in Intune': 'warn', 'Intune only': 'warn' }[s] || 'bad');
 const outcomeCls = s => ({ 'Without issues': 'ok', 'Issue fixed': 'ok', 'Failed': 'bad', 'Issue detected': 'warn', 'Pending': 'warn' }[s] || 'muted');
 
+const changesUi = createChangesUi({ el, pill, api, view, fmtTime, session });
 const VIEWS = {
+  changes: () => changesUi.changes(),
+  new: () => changesUi.new(),
+  edit: key => changesUi.edit(key),
+  update: key => changesUi.update(key),
   remediations: () => page('Remediations', 'Catalog from your-org/remediations main and Intune Remediations, with drift between them and run summary counts.', async (refresh, body) => {
     const d = await api('/api/remediations', refresh);
-    body.replaceChildren(el('p', { className: 'muted', textContent: `Repo main ${d.repoSha.slice(0, 8)} (${fmtTime(d.repoDate)}): ${d.repoMessage}` }), el('div'));
+    body.replaceChildren(el('div', { className: 'toolbar' }, changesUi.authorLink('#new', 'New remediation')), el('p', { className: 'muted', textContent: `Repo main ${d.repoSha.slice(0, 8)} (${fmtTime(d.repoDate)}): ${d.repoMessage}` }), el('div'));
     renderTable(body.lastChild, { rows: d.rows.map(r => ({ ...r, source: r.inRepo ? (r.intuneId ? 'Repo + Intune' : 'Repo') : 'Intune' })), columns: [
+      { key: 'edit', label: '', width: 80, render: r => (r.inRepo && r.folder ? changesUi.authorLink(`#edit/${encodeURIComponent(r.folder)}`, 'Edit') : '') },
       { key: 'name', label: 'Remediation', width: 240 },
       { key: 'status', label: 'Drift', width: 130, render: r => pill(r.status, statusCls(r.status)) },
       { key: 'reasons', label: 'Differences', width: 260 },
@@ -112,18 +125,104 @@ const VIEWS = {
     return pim;
   }),
 };
+const RANGES = { '24h': ['Last 24 hours', 1], '7d': ['Last 7 days', 7], '30d': ['Last 30 days', 30], '90d': ['Last 90 days', 90], '365d': ['Last 12 months', 365] };
+const actionCls = a => (a.endsWith('.denied') || a.endsWith('.failed') ? 'bad' : a === 'change.discarded' || a === 'change.rejected' || a.includes('elevate') ? 'warn' : a.startsWith('change.') ? 'ok' : 'muted');
+VIEWS.audit = () => {
+  const range = el('select', {}, ...Object.entries(RANGES).map(([k, [label]]) => el('option', { value: k, textContent: label })));
+  range.value = '7d';
+  const actor = el('input', { type: 'text', placeholder: 'Actor (exact UPN)', size: 26 });
+  const target = el('input', { type: 'text', placeholder: 'Target contains', size: 22 });
+  const go = el('button', { className: 'btn', textContent: 'Apply' });
+  const dl = (fmt, label) => el('a', { className: 'btn', textContent: label, target: '_blank', rel: 'noopener' }, null);
+  const dlJson = dl('json', 'Download JSON'), dlCsv = dl('csv', 'Download CSV');
+  const out = el('div');
+  const params = () => {
+    const p = new URLSearchParams({ from: new Date(Date.now() - RANGES[range.value][1] * 86400000).toISOString(), to: new Date().toISOString(), limit: '1000' });
+    if (actor.value.trim()) p.set('actor', actor.value.trim());
+    if (target.value.trim()) p.set('target', target.value.trim());
+    return p;
+  };
+  const load = async () => {
+    go.disabled = true; out.replaceChildren(el('p', { className: 'muted', textContent: 'Loading...' }));
+    try {
+      const p = params();
+      dlJson.href = `/api/audit/download?${p}&format=json`; dlCsv.href = `/api/audit/download?${p}&format=csv`;
+      const d = await api(`/api/audit?${p}`);
+      out.replaceChildren(el('p', { className: 'muted', textContent: `Loaded ${fmtTime(d.fetchedAt)}${d.truncated ? '. Showing the newest 1000 events; narrow the range or filters.' : ''}` }), el('div'));
+      renderTable(out.lastChild, { rows: d.rows, columns: [
+        { key: 'at', label: 'Time (PT)', width: 190, render: r => fmtTime(r.at) },
+        { key: 'action', label: 'Action', width: 170, render: r => pill(r.action, actionCls(r.action)) },
+        { key: 'result', label: 'Result', width: 80 },
+        { key: 'actorUpn', label: 'Actor', width: 200 },
+        { key: 'target', label: 'Target', width: 180 },
+        { key: 'reason', label: 'Reason', width: 160 },
+        { key: 'approverOid', label: 'Approver', width: 130 },
+        { key: 'selfApproved', label: 'Self-approved', width: 100 },
+        { key: 'gitSha', label: 'Git', width: 90 },
+        { key: 'prNumber', label: 'PR', width: 60 },
+        { key: 'pimState', label: 'PIM', width: 220 },
+        { key: 'acrs', label: 'Auth context', width: 100 },
+        { key: 'sessionUntil', label: 'Session until', width: 190, render: r => fmtTime(r.sessionUntil) },
+        { key: 'graphRequestId', label: 'Graph request', width: 280 },
+        { key: 'detail', label: 'Detail', width: 320 },
+        { key: 'mode', label: 'PIM mode', width: 80 },
+        { key: 'actorOid', label: 'Actor oid', width: 280 },
+      ], empty: 'No audit events match.' });
+    } catch (e) { out.replaceChildren(el('p', { className: 'error', textContent: e.message })); }
+    finally { go.disabled = false; }
+  };
+  go.onclick = load;
+  view().replaceChildren(el('h1', { textContent: 'Audit' }),
+    el('p', { className: 'muted', textContent: 'Append-only record of every write session and change (Azure Table r360audit, with an immutable copy of each event in r360audit-export). Times are Pacific.' }),
+    el('div', { className: 'toolbar' }, range, actor, target, go, dlJson, dlCsv), out);
+  load();
+};
 for (const [k, [title, phase, what]] of Object.entries(STUBS)) VIEWS[k] = () => view().replaceChildren(el('h1', { textContent: title }), el('p', { className: 'muted', textContent: `Coming in phase ${phase}. ${what}` }));
 
 function route() {
-  const name = (location.hash || '#remediations').slice(1);
-  const v = VIEWS[name] ? name : 'remediations';
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === v));
-  VIEWS[v]();
+  const [name, arg] = (location.hash || '#remediations').slice(1).split('/');
+  const v = Object.hasOwn(VIEWS, name) ? name : 'remediations';
+  const tab = { new: 'remediations', edit: 'remediations', update: 'changes' }[v] || v;
+  changesUi.stop();
+  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === tab));
+  VIEWS[v](arg ? decodeURIComponent(arg) : '');
 }
-async function boot() {
+// Write session: the server decides and enforces it; this only shows it. Red banner while elevated, with an End button.
+let writeTimer = null;
+function renderWrite(me, banners) {
+  banners.querySelector('.banner.write')?.remove();
+  const ctl = document.getElementById('writectl');
+  clearTimeout(writeTimer);
+  if (me.write.active) {
+    // The button is always enabled except while its own request is in flight, and it always recovers. A failure is shown in the banner (no alert).
+    const end = el('button', { className: 'btn', textContent: 'End write session' });
+    const msg = el('span', { role: 'status' });
+    end.onclick = async () => {
+      end.disabled = true; end.textContent = 'Ending...'; msg.textContent = '';
+      try { await api('/auth/write/end', false, { method: 'POST', keepOn401: true }); nav.reload(); }
+      catch (e) {
+        end.disabled = false; end.textContent = 'End write session';
+        if (e.status === 401) { msg.textContent = 'The app restarted, which ends every session, so this write session is already over. Signing you in again...'; setTimeout(nav.signin, 3000); }
+        else msg.textContent = e.message;
+      }
+    };
+    banners.prepend(el('div', { className: 'banner write' }, `WRITE SESSION until ${fmtTime(me.write.until)}. Changes are audited. `, end, msg));
+    ctl.replaceChildren();
+    writeTimer = setTimeout(() => location.reload(), Math.max(1000, Date.parse(me.write.until) - Date.now() + 1000));
+    return;
+  }
+  const b = el('button', { className: 'btn', textContent: 'Elevate to write', disabled: !me.write.canElevate });
+  b.title = me.write.canElevate ? `Sign in again to start your ${me.write.ttlMinutes / 60}-hour write session (audited).` : me.write.blockedReason;
+  b.onclick = () => { location.href = '/auth/write/start'; };
+  ctl.replaceChildren(b);
+}
+export async function boot() {
   const me = await api('/api/me');
+  session.csrf = me.csrf;
+  session.me = me;
   document.getElementById('who').textContent = me.user.upn;
   const b = document.getElementById('banners');
+  renderWrite(me, b);
   if (me.fourEyes === 'testing') b.append(el('div', { className: 'banner testing', textContent: 'TESTING MODE: four-eyes is not enforced (self-approval allowed and audited).' }));
   if (me.approversError) b.append(el('div', { className: 'banner warn', textContent: `approvers.json problem: ${me.approversError}. Writes fail closed.` }));
   addEventListener('hashchange', route);

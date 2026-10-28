@@ -15,6 +15,11 @@ h1 { font-size:14pt; margin:0 0 8px; } h2 { font-size:11pt; margin:16px 0 8px; }
 .banner { padding:6px 16px; font-weight:600; }
 .banner.testing { background:var(--bad); color:#fff; }
 .banner.warn { background:var(--warn); color:#000; }
+.banner.write { background:var(--bad); color:#fff; display:flex; gap:12px; align-items:center; }
+.banner.write .btn { border-color:#fff; color:#fff; padding:0 10px; }
+.banner.write .btn:hover { background:#fff; color:var(--bad); }
+.banner.write .btn:disabled { background:transparent; border-color:#fff; color:#fff; opacity:.6; cursor:progress; }
+input[type=text], select { font:inherit; padding:3px 6px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:4px; }
 /* One button style for the whole app. Disabled buttons are greyed and say why in the tooltip. */
 .btn { display:inline-block; font:inherit; padding:4px 12px; border-radius:4px; border:1px solid var(--accent); background:transparent; color:var(--accent); cursor:pointer; text-decoration:none; }
 .btn:hover { background:var(--accent); color:#fff; }
@@ -36,3 +41,35 @@ th .grip { position:absolute; right:0; top:0; width:6px; height:100%; cursor:col
 .card { background:var(--panel); border:1px solid var(--line); padding:12px; min-width:280px; flex:1; }
 dl.kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; margin:0; } dl.kv dt { color:var(--muted); } dl.kv dd { margin:0; word-break:break-all; }
 .error { color:var(--bad); }
+
+input[type=number], textarea { font:inherit; padding:3px 6px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:4px; }
+textarea { max-width:100%; } textarea.code { font-family: Consolas, "Cascadia Mono", monospace; font-size:9pt; display:block; }
+.form { display:grid; grid-template-columns:max-content 1fr; gap:6px 16px; align-items:start; max-width:900px; }
+.form .field { display:contents; } .form .field small { grid-column:2; margin-top:-4px; }
+.diff { margin:0 0 12px; padding:8px; background:var(--panel); border:1px solid var(--line); max-height:340px; overflow:auto; font-family: Consolas, "Cascadia Mono", monospace; font-size:9pt; }
+.diff div { white-space:pre-wrap; } .diff .add { color:var(--ok); } .diff .del { color:var(--bad); } .diff .ctx { color:var(--muted); }
+.stepper { display:inline-flex; gap:4px; }
+.step { padding:0 6px; border-radius:8px; font-size:8.5pt; border:1px solid var(--line); color:var(--muted); }
+.step.done { color:var(--ok); border-color:var(--ok); } .step.active { color:var(--warn); border-color:var(--warn); } .step.failed { color:var(--bad); border-color:var(--bad); } .step.skipped { opacity:.4; text-decoration:line-through; }
+.pill.muted { color:var(--muted); }
+.soak-banner { display:inline-block; background:var(--bad); color:#fff; font-weight:bold; padding:2px 8px; border-radius:4px; }
+.promote-panel:not(:empty) { border:1px solid var(--bad); border-radius:6px; padding:8px 12px; margin:8px 0; }
+.promote-panel .checks { list-style:none; padding-left:0; }
+.target-picker { margin:8px 0; }
+.group-search { min-width:30em; max-width:100%; }
+.group-results { list-style:none; padding-left:0; max-height:18em; overflow:auto; }
+.group-pick { display:block; width:100%; text-align:left; margin:2px 0; }
+.group-pick[aria-pressed="true"] { outline:2px solid var(--accent, #0a58ca); font-weight:bold; }
+.promote-steps { padding-left:0; list-style:none; }
+.promote-step { margin:10px 0; }
+.promote-step > h3 { margin:6px 0; }
+.selected-targets { margin:8px 0; padding:6px 8px; border:1px dashed var(--line); border-radius:4px; }
+.selected-targets h4 { margin:0 0 4px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; }
+.chip { display:inline-flex; align-items:center; gap:4px; padding:2px 4px 2px 10px; border:1px solid var(--accent); border-radius:12px; }
+.chip-remove { font:inherit; border:0; background:transparent; color:var(--accent); cursor:pointer; padding:0 6px; border-radius:10px; }
+.chip-remove:hover { background:var(--accent); color:#fff; }
+/* Step 2: the red banner first, the reason below it, both full width and stacked, never side by side. */
+.override-block { display:flex; flex-direction:column; align-items:stretch; gap:6px; }
+.override-block .soak-banner { display:block; width:auto; margin:0; }
+.override-block .override-reason { display:block; width:100%; box-sizing:border-box; }

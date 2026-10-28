@@ -1,6 +1,8 @@
 # Remediation 360 (r360): product design
 
 Status: v3.1, 2026-10-25 23:00 PT. Applies Aaron's decisions R1-R3 (accepted). Phase 0 scripts are written in `tools/` (not yet run); no infrastructure has been created.
+
+Phase 2 status (2026-10-27): live. r360 authors, approves, signs (CI), publishes to the canary group and promotes after soak. Since 2026-10-27 only the r360 GitHub App can merge to remediations main (ruleset r360-app-only-merge); the human merge step of Publish-Remediation.ps1 is retired. Write sessions stay in memory by design (risk R7). Plan and evidence: docs/phase2-plan.md.
 r360 is a **standalone product** with its own code, identity and infrastructure. Design rules: delegated-only access and no secrets.
 
 ## 1. Purpose

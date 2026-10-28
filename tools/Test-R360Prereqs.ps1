@@ -132,6 +132,9 @@ if ((& $want 'Infrastructure') -and $azOk) {
         } else { Add-Check Infrastructure "Storage $($cfg.Storage)" $missing '' }
         $role = @(Invoke-R360Az -Arguments @('role', 'definition', 'list', '--custom-role-only', 'true', '--name', $cfg.AuditRoleName) -AllowFailure).Count
         Add-Check Infrastructure "Custom role '$($cfg.AuditRoleName)'" $(if ($role -gt 0) { 'PASS' } else { $missing }) 'read + add only (no update/delete)'
+        $blobScope = "$($st.id)/blobServices/default/containers/$($cfg.AuditExportContainer)"
+        $blobRole = if ($st -and $mi) { @(Invoke-R360Az -Arguments @('role', 'assignment', 'list', '--assignee', $mi.principalId, '--scope', $blobScope) -AllowFailure | Where-Object { $_.roleDefinitionName -eq 'Storage Blob Data Contributor' }).Count } else { 0 }
+        Add-Check Infrastructure "Blob role for $($cfg.Identity) on $($cfg.AuditExportContainer)" $(if ($blobRole -gt 0) { 'PASS' } else { $missing }) 'Storage Blob Data Contributor, container scope (immutability policy protects existing blobs)'
         $cae = Invoke-R360Az -Arguments @('containerapp', 'env', 'show', '-n', $cfg.ContainerEnv, '-g', $cfg.ResourceGroup) -AllowFailure
         Add-Check Infrastructure "Container Apps env $($cfg.ContainerEnv)" $(if ($cae) { 'PASS' } else { $missing }) ''
         $app = Invoke-R360Az -Arguments @('containerapp', 'show', '-n', $cfg.ContainerApp, '-g', $cfg.ResourceGroup) -AllowFailure
@@ -183,7 +186,10 @@ if ((& $want 'GitHubApp') -and $azOk) {
     foreach ($v in 'R360_GITHUB_APP_ID', 'R360_GITHUB_INSTALLATION_ID') {
         Add-Check GitHubApp "Setting $v" $(if ($envVars[$v]) { 'PASS' } else { $missing }) "$($envVars[$v])"
     }
-    Add-Check GitHubApp 'remediations main: App-only merge rule' 'INFO' 'Deferred by decision: gated later step once r360 can publish (current Publish-Remediation.ps1 flow stays)'
+    $rs = @(Invoke-R360Gh -Arguments @('api', "repos/$($cfg.GitHubOrg)/remediations/rulesets") -AllowFailure | ForEach-Object { $_ }) | Where-Object name -eq 'r360-app-only-merge'
+    $ro = if ($rs) { Invoke-R360Gh -Arguments @('api', "repos/$($cfg.GitHubOrg)/remediations/rulesets/$($rs.id)") } else { $null }
+    $okRule = $ro -and $ro.enforcement -eq 'active' -and $ro.bypass_actors.Count -eq 1 -and "$($ro.bypass_actors[0].actor_id)" -eq "$($envVars['R360_GITHUB_APP_ID'])" -and $ro.bypass_actors[0].bypass_mode -eq 'pull_request'
+    Add-Check GitHubApp 'remediations main: App-only merge rule' $(if ($okRule) { 'PASS' } elseif ($ro) { 'FAIL' } else { $missing }) $(if ($ro) { "ruleset $($ro.id) $($ro.enforcement), bypass $($ro.bypass_actors[0].actor_type) $($ro.bypass_actors[0].actor_id) ($($ro.bypass_actors[0].bypass_mode))" } else { 'Run tools/Set-R360RulesetAppOnly.ps1' })
 }
 
 # ---------- Code signing ----------

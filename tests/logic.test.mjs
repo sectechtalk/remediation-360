@@ -95,3 +95,29 @@ test('table helpers: multi-select filters, sorting, blanks', () => {
   assert.deepEqual(sortRows(rows, 'n', 'desc').map(r => r.n), [10, 2, 1]);
   assert.equal(cellText([]), '(blank)'); assert.equal(cellText(['a', 'b']), 'a; b');
 });
+
+// Intune holds the CI-signed copy (jsign appends an Authenticode block); the repo holds the unsigned script. Same script, no drift.
+const SIG = ['# SIG # Begin signature block', 'MIIFxwYJKoZIhvcNAQcCoIIFuDCCBbQCAQExDzANBglghkgBZQMEAgEFADB5Bgor', 'BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG', '# SIG # End signature block'].join('\r\n');
+const signed = body => `\uFEFF${body.replace(/\n/g, '\r\n')}\r\n\r\n${SIG}\r\n`;
+
+test('drift: a CI-signed copy in Intune equals the unsigned repo script (SIG block, BOM and EOL are not content)', () => {
+  const body = 'exit 0\nWrite-Output "x"\n';
+  assert.equal(normalizeScript(signed(body)), normalizeScript(body));
+  assert.equal(scriptHash(signed(body)), scriptHash(body));
+  const signedIntune = { ...intune, detectionScriptContent: b64(signed(repoItem.detect)), remediationScriptContent: b64(signed(repoItem.remediate)) };
+  assert.deepEqual(driftReasons(repoItem, signedIntune), []);
+  const rows = buildCatalog({ repoItems: [repoItem], intuneScripts: [signedIntune] });
+  assert.equal(rows[0].status, 'In sync');
+  assert.deepEqual(rows[0].reasons, []);
+});
+
+test('drift: real content changes are still caught under a signature, and only a trailing block is stripped', () => {
+  const changed = { ...intune, remediationScriptContent: b64(signed('Set-OtherThing\n')) };
+  assert.deepEqual(driftReasons(repoItem, changed), ['remediate.ps1 differs']);
+  // Text that merely looks like a signature in the middle of a script is content, so a change there is drift.
+  const mid = `a\n${SIG.replace(/\r\n/g, '\n')}\nb\n`;
+  assert.equal(normalizeScript(mid), mid.trimEnd());
+  assert.notEqual(scriptHash(mid), scriptHash('a\nb\n'));
+  assert.equal(normalizeScript(`${SIG}\r\n`), '');
+  assert.equal(normalizeScript(null), null);
+});

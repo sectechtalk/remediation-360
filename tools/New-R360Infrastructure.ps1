@@ -1,4 +1,4 @@
-#Requires -Version 7.4
+﻿#Requires -Version 7.4
 <#
 .SYNOPSIS
     Creates the r360 Azure footprint (idempotent): rg-r360, id-r360, Premium Key Vault (RBAC, purge protection),
@@ -118,6 +118,11 @@ try {
     }
     if ($mi -and $st -and $roleExists) {
         Set-R360RoleAssignment -PrincipalId $mi.principalId -PrincipalType ServicePrincipal -Role $cfg.AuditRoleName -Scope "$($st.id)/tableServices/default/tables/$($cfg.AuditTable)" -WhatIf:$WhatIfPreference
+    }
+    # Phase 2: one immutable blob per audit event. Scoped to the export container only. The container's 365-day retention policy
+    # (not this role) is what stops an existing blob being overwritten or deleted.
+    if ($mi -and $st) {
+        Set-R360RoleAssignment -PrincipalId $mi.principalId -PrincipalType ServicePrincipal -Role 'Storage Blob Data Contributor' -Scope "$($st.id)/blobServices/default/containers/$($cfg.AuditExportContainer)" -WhatIf:$WhatIfPreference
     }
 
     # Container Apps environment + app (scale 0-1, user-assigned identity, placeholder image until Phase 1)

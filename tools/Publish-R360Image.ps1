@@ -1,4 +1,4 @@
-#Requires -Version 7.4
+﻿#Requires -Version 7.4
 <#
 .SYNOPSIS
     Tests, builds, pushes and deploys the r360 web image to app-r360, then verifies the live sign-in redirect.
@@ -48,7 +48,7 @@ $fqdn = $app.properties.configuration.ingress.fqdn
 if (-not $fqdn) { throw "$($cfg.ContainerApp) has no ingress FQDN." }
 $base = "https://$fqdn"
 $envNow = Get-R360ContainerAppEnv
-foreach ($k in 'ENTRA_TENANT_ID', 'R360_WEB_CLIENT_ID', 'AZURE_CLIENT_ID', 'R360_GITHUB_APP_ID', 'R360_GITHUB_INSTALLATION_ID', 'R360_KEY_VAULT') {
+foreach ($k in 'ENTRA_TENANT_ID', 'R360_WEB_CLIENT_ID', 'R360_WRITE_CLIENT_ID', 'AZURE_CLIENT_ID', 'R360_GITHUB_APP_ID', 'R360_GITHUB_INSTALLATION_ID', 'R360_KEY_VAULT') {
     if (-not $envNow[$k]) { throw "$($cfg.ContainerApp) is missing $k. Rerun the Phase 0 tools (Initialize-R360.ps1 / New-R360GitHubApp.ps1)." }
 }
 
@@ -103,6 +103,14 @@ $values = [ordered]@{
     R360_CODESIGN_THUMBPRINT = $CodeSigningThumbprint
     R360_IMAGE_TAG           = $Tag
 }
+# Settings the config file owns. A blank or missing value there must never wipe a value that is already live.
+foreach ($k in 'R360_AUDIT_STORAGE_ACCOUNT', 'R360_AUDIT_TABLE', 'R360_AUDIT_EXPORT_CONTAINER', 'R360_ELEVATION_TTL_MINUTES', 'R360_CANARY_GROUP_ID', 'R360_MAX_OPEN_CHANGES') {
+    $fromConfig = "$($cfg.AppSettings[$k])"
+    if ($fromConfig) { $values[$k] = $fromConfig } elseif ($envNow[$k]) { $values[$k] = $envNow[$k] }
+}
+# Everything else r360 already has on the app (R360_FOUR_EYES, R360_CANARY_SOAK_DAYS, R360_PROD_GROUP_ID, R360_PIM_MODE and any other R360_* setting) is carried forward as it is.
+$preserved = [ordered]@{}
+foreach ($k in @($envNow.Keys | Where-Object { $_ -like 'R360_*' -and -not $values.Contains($_) } | Sort-Object)) { $values[$k] = $envNow[$k]; $preserved[$k] = $envNow[$k] }
 if ($PSCmdlet.ShouldProcess($cfg.ContainerApp, "Deploy $ref (port 8080, scale 0-1)")) {
     Set-R360ContainerAppEnv -Values $values -TimeoutSeconds $TimeoutSeconds
     Write-R360Step "Updating image to $ref"
@@ -123,6 +131,9 @@ if ($PSCmdlet.ShouldProcess($cfg.ContainerApp, "Deploy $ref (port 8080, scale 0-
     }
     $results = [System.Collections.Generic.List[object]]::new()
     $results.Add((Format-R360Check -Stage 'Live' -Check 'healthz' -Status 'PASS' -Detail "image $($health.image)"))
+    $envAfter = Get-R360ContainerAppEnv
+    $lost = @($preserved.Keys | Where-Object { "$($envAfter[$_])" -ne "$($preserved[$_])" })
+    $results.Add((Format-R360Check -Stage 'Live' -Check 'existing env vars preserved' -Status $(if ($lost) { 'FAIL' } else { 'PASS' }) -Detail $(if ($lost) { "changed or lost: $($lost -join ', ')" } else { "$($preserved.Count) kept: $(@($preserved.Keys) -join ', ')" })))
     $r1 = Invoke-WebRequest "$base/" -MaximumRedirection 0 -SkipHttpErrorCheck -ErrorAction SilentlyContinue
     $loc1 = "$($r1.Headers.Location)"
     $results.Add((Format-R360Check -Stage 'Live' -Check '/ redirects to sign-in' -Status $(if ($r1.StatusCode -eq 302 -and $loc1 -eq '/auth/signin') { 'PASS' } else { 'FAIL' }) -Detail "$($r1.StatusCode) $loc1"))
@@ -135,9 +146,9 @@ if ($PSCmdlet.ShouldProcess($cfg.ContainerApp, "Deploy $ref (port 8080, scale 0-
     $logs = Wait-R360Condition -Activity 'startup self-check log lines' -TimeoutSeconds 300 -IntervalSeconds 15 -Condition {
         $l = az containerapp logs show -n $cfg.ContainerApp -g $cfg.ResourceGroup --tail 200 --format text 2>$null
         $lines = @($l | Where-Object { $_ -match 'selfcheck' })
-        if ($lines.Count -ge 2) { , $lines }
+        if ($lines.Count -ge 3) { , $lines }
     }
-    foreach ($name in 'mi-fic-token', 'github-app') {
+    foreach ($name in 'mi-fic-token', 'github-app', 'audit-store') {
         $line = @($logs | Where-Object { $_ -match "selfcheck $name" }) | Select-Object -Last 1
         $results.Add((Format-R360Check -Stage 'Live' -Check "selfcheck $name" -Status $(if ($line -match 'PASS') { 'PASS' } else { 'FAIL' }) -Detail "$line".Trim()))
     }
