@@ -69,10 +69,16 @@ Design: [docs/remediation-360-design.md](docs/remediation-360-design.md). Phase 
 - Security headers include a strict CSP and `frame-ancestors 'none'`.
 
 ## Screenshots
+All screenshots are local renders of the real UI with fictional sample data (contoso.example). No tenant data.
+
 | | |
 |---|---|
-| ![Promote panel](docs/screenshots/promote-panel.png) | ![Changes](docs/screenshots/changes.png) |
-| *Promote panel with the group picker* | *Changes: author, approve, publish* |
+| ![Remediations](docs/screenshots/remediations.png) | ![Fleet](docs/screenshots/fleet.png) |
+| *Remediations: repo vs Intune drift and run counts* | *Fleet: per-device run state for every remediation* |
+| ![Certificates](docs/screenshots/certificates.png) | ![Settings](docs/screenshots/settings.png) |
+| *Certificates: signing cert profiles and device status* | *Settings: your roles, PIM status and configuration* |
+| ![Changes](docs/screenshots/changes.png) | ![Promote panel](docs/screenshots/promote-panel.png) |
+| *Changes: author, approve, publish* | *Promote panel with the group picker* |
 | ![Audit](docs/screenshots/audit.png) | |
 | *Audit trail* | |
 
