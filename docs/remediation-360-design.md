@@ -13,7 +13,7 @@ Manage Intune Remediations (deviceHealthScripts) from `your-org/remediations` th
 
 | Item | Name (proposed) |
 |---|---|
-| Repo (private, not created yet; **accepted**, R1) | `sectechtalk/remediation-360` |
+| Repo (private, not created yet; **accepted**, R1) | `your-org/r360` |
 | Image | `ghcr.io/your-org/remediation-360:<yyyyMMdd-HHmm>` |
 | Resource group | `rg-r360`, westus3 |
 | Container Apps env + app | `cae-r360` / `app-r360`, scale 0-1 (maxReplicas 1), **default `*.azurecontainerapps.io` FQDN, no custom domain** (R2) |
@@ -98,7 +98,7 @@ Aaron's permanent GA bypasses PIM. In hardening: make it eligible, and create tw
   - Every PR body has a signed-off block: submitter oid/UPN, approver oid/UPN, timestamps, audit ids.
   - Audit rows hold the Entra oid.
 - **r360 is the sole four-eyes enforcer.** GitHub sees one actor (the App), so GitHub reviews can't distinguish people.
-- **Ruleset changes** (`main-protection` 25825962). **Deferred (R3):** none of this is applied in Phase 0. The current `Publish-Remediation.ps1` flow (humans merge PRs) stays until r360 can publish end to end; then the App-only rule is turned on as a separate, gated step (section 13, "Gated later step").
+- **Ruleset changes** (`main-protection` 87654321). **Deferred (R3):** none of this is applied in Phase 0. The current `Publish-Remediation.ps1` flow (humans merge PRs) stays until r360 can publish end to end; then the App-only rule is turned on as a separate, gated step (section 13, "Gated later step").
   - Keep: PR required, required check `PSScriptAnalyzer` (strict), no deletion/force-push.
   - **Restrict updates to main** (merges) to the GitHub App only: add the App as the **only bypass actor**, `bypass_mode: pull_request`. Add an `update` restriction so humans can't merge to main.
   - `required_approving_review_count` stays 0, because the App cannot approve its own PRs.
@@ -280,7 +280,7 @@ Verify in Phase 4: the Defender token audience (`api.securitycenter.microsoft.co
 
 ### Phase 0 checklist
 
-1. [ ] Create the private repo `sectechtalk/remediation-360` (+ CODEOWNERS, PSScriptAnalyzer workflow, ruleset).
+1. [ ] Create the private repo `your-org/r360` (+ CODEOWNERS, PSScriptAnalyzer workflow, ruleset).
 2. [ ] `Test-R360Prereqs.ps1` written first. Every following step re-runs it.
 3. [ ] `New-R360Infrastructure.ps1`: rg-r360, id-r360, kv-r360 (Premium), storage/audit, cae-r360 + app-r360 (placeholder image, scale 0-1).
 4. [ ] `New-R360AppRegistration.ps1`: r360-web, r360-write (MI FIC), r360-ci-signer (GitHub OIDC FIC), admin consent.
@@ -296,14 +296,14 @@ Verify in Phase 4: the Defender token audience (`api.securitycenter.microsoft.co
 
 Run only when **all** are true: r360 has published at least one remediation end to end (PR → merge → sign → canary) through the App, `Test-R360Prereqs.ps1 -Stage All -RequireDeployed` passes, and Aaron approves the switch.
 
-1. [ ] Add the GitHub App as the only bypass actor on `main-protection` (25825962), `bypass_mode: pull_request`, plus the `update` restriction.
+1. [ ] Add the GitHub App as the only bypass actor on `main-protection` (87654321), `bypass_mode: pull_request`, plus the `update` restriction.
 2. [ ] Retire the human merge step of `Publish-Remediation.ps1` (it keeps working for PR creation).
 3. [ ] Document and test the org-owner ruleset break-glass.
 4. [ ] `Test-R360Prereqs.ps1` ruleset check changes from INFO to PASS/FAIL.
 
 ## 14. Remaining decisions
 
-- **R1 (decided):** `sectechtalk/remediation-360`, private. Accepted.
+- **R1 (decided):** `your-org/r360`, private. Accepted.
 - **R2 (decided):** default Container Apps FQDN for now; no custom domain.
 - **R3 (decided):** App-only merge on `remediations` main is turned on only once r360 can publish. The current `Publish-Remediation.ps1` flow stays until then. Separate gated step, not Phase 0.
 - **R4:** Execution policy AllSigned fleet-wide in hardening: yes/no.

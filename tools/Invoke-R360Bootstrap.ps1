@@ -3,7 +3,7 @@
 .SYNOPSIS
     Runs the r360 Phase 0 bootstrap end to end, in order, stopping on the first failure.
 .DESCRIPTION
-    Steps: Repo (gh repo create sectechtalk/remediation-360, private, push) -> Infrastructure -> AppRegistration -> GitHubApp -> CodeSigning.
+    Steps: Repo (gh repo create your-org/r360, private, push) -> Infrastructure -> AppRegistration -> GitHubApp -> CodeSigning.
     Prereqs run before the first step and again after each step (-RequireDeployed, so anything missing fails).
     Under -WhatIf nothing is changed, Graph is not signed in, and post-step deployment checks are skipped.
     Re-running is safe: every step checks before it creates.

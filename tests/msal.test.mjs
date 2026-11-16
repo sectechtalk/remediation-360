@@ -151,7 +151,7 @@ test('real MSAL: write elevation uses the r360-write app, ONLY the Intune script
     assert.equal(authz.searchParams.get('login_hint'), 'admin@contoso.com');
     assert.ok(!authz.searchParams.get('prompt'), 'silent SSO when possible');
     const scopes = authz.searchParams.get('scope').split(' ').filter(s => s.startsWith('https://'));
-    assert.deepEqual(scopes, WRITE_SCOPES, 'the write app asks for nothing but DeviceManagementScripts.ReadWrite.All');
+    assert.deepEqual(scopes, WRITE_SCOPES, 'the write app asks for the scripts scope and the configuration scope (signing profiles) only');
     const { code, state } = st.entra.authorize(authz.href);
     rs = await fetch(`${base}/auth/write/callback?code=${code}&state=${state}`, { redirect: 'manual', headers: h });
     assert.equal(rs.status, 302);

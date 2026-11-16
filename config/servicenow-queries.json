@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "id": "certificate-revocations",
+      "name": "Certificate revocations",
+      "table": "sc_req_item",
+      "query": "cat_item.name=Certificate Revocation^active=true",
+      "description": "Active Certificate Revocation requested items. This was the old Check ServiceNow import.",
+      "actionTemplates": []
+    }
+  ]
+}

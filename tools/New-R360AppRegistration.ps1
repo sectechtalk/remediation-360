@@ -62,7 +62,8 @@ try {
     $defs = @(
         @{ Name = $cfg.AppWeb; Redirect = @("https://$fqdn/auth/callback"); AssignRequired = $true
             Fic = @{ name = 'r360-managed-identity'; issuer = "https://login.microsoftonline.com/$($cfg.TenantId)/v2.0"; subject = $mi.principalId }
-            Access = @{ Graph = $oidc + @('DeviceManagementConfiguration.Read.All', 'DeviceManagementManagedDevices.Read.All', 'DeviceManagementScripts.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All') } }
+            # Mail.Read.Shared: change requests read the shared change mailbox as the signed-in operator (delegated, Full Access in Exchange).
+            Access = @{ Graph = $oidc + @('DeviceManagementConfiguration.Read.All', 'DeviceManagementManagedDevices.Read.All', 'DeviceManagementScripts.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All', 'Mail.Read.Shared') } }
         @{ Name = $cfg.AppWrite; Redirect = @("https://$fqdn/auth/write/callback"); AssignRequired = $true
             Fic = @{ name = 'r360-managed-identity'; issuer = "https://login.microsoftonline.com/$($cfg.TenantId)/v2.0"; subject = $mi.principalId }
             Access = @{

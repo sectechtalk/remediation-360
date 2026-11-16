@@ -6,7 +6,7 @@ import { createIntune, sha256Hex, HS } from '../server/intune.mjs';
 import { SIG_BEGIN } from '../server/signing.mjs';
 import { loadConfig } from '../server/config.mjs';
 import { metaText } from '../server/remediation-schema.mjs';
-import { ENV } from './fixtures.mjs';
+import { ENV, signingProfiles } from './fixtures.mjs';
 
 // A shared world for the S6 tests. The fixture is a test-signed artifact of fake commit c0ffee00 (tests/data/build-signed-fixture.ps1). In this world its assignment group
 // (90000000...) plays the PRODUCTION group, and the canary group is a different one, so the signed fixture bytes can be published to
@@ -69,6 +69,7 @@ export function graph() {
       if (isCount) { if (g.countFail) return json(403, { error: { code: 'Authorization_RequestDenied', message: 'no' } }, rid); return new Response(String(dev ? grp.devices : grp.members), { status: 200, headers: { 'content-type': 'text/plain', 'request-id': rid } }); }
       return json(200, strip(grp), rid);
     }
+    const sp = g.signing?.handle(method, u.pathname, body, json, rid); if (sp) return sp;
     const m = /^\/beta\/deviceManagement\/deviceHealthScripts(?:\/([^/]+)(\/assignments|\/assign|\/runSummary|\/deviceRunStates)?)?$/.exec(u.pathname);
     if (!m) return json(404, { error: { code: 'NotFound', message: 'no route' } }, rid);
     const [, id, sub] = m;
@@ -94,7 +95,7 @@ export function world({ mode = 'testing', soakDays = 8, prod = true, canaryAutho
   const w = { t: T0, seq: 0, mode, config, rows: [], order: [], comments: [], proposals: [], files: {}, mainSha: CSHA, mainMeta: canaryMeta, pr: null, canaryAt, auditDown: false, intentDown: false, proposeFail: null, logs: [],
     canaryPr: { number: 3, state: 'closed', merged: true, draft: false, title: 'canary', url: 'https://github.com/your-org/remediations/pull/3', branch: `r360/${FOLDER}/202610171504-${canaryAuthor.oid.slice(0, 8)}`, headSha: 'd'.repeat(40), headRepo: 'your-org/remediations', base: 'main',
       body: `Proposed through r360 by ${canaryAuthor.upn} on x\n${machineBlock({ folder: FOLDER, authorOid: canaryAuthor.oid })}`, createdAt: iso(canaryAt - DAY), updatedAt: iso(canaryAt), mergedAt: iso(canaryAt - 3600000), mergeSha: CSHA, checks: GREEN } };
-  w.g = graph(); w.g.order = w.order;
+  w.g = graph(); w.g.order = w.order; w.g.signing = signingProfiles({ canary: CAN });
   const detectB = Buffer.from(parts[`remediations/${FOLDER}/detect.ps1`]), remB = Buffer.from(parts[`remediations/${FOLDER}/remediate.ps1`]);
   w.hashes = { detect: sha256Hex(detectB), remediate: sha256Hex(remB) };
   w.g.scripts.set('intune-canary', { id: 'intune-canary', displayName: 'STT - Remediation Canary', description: `Canary [git ${CSHA.slice(0, 8)} by ${canaryAuthor.upn}; approved by ${canaryAuthor.upn}; published by ${canaryAuthor.upn} via r360]`, publisher: 'SecTechTalk', runAsAccount: 'system', runAs32Bit: false,

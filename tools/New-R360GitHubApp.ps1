@@ -81,7 +81,7 @@ try {
         throw 'Run New-R360Infrastructure.ps1 first.'
     }
 
-    # sectechtalk may be a user account or an organization; the manifest and install URLs differ.
+    # your-org may be a user account or an organization; the manifest and install URLs differ.
     $owner = Invoke-R360Gh -Arguments @('api', "users/$($cfg.GitHubOrg)")
     $newAppUrl = if ($owner.type -eq 'Organization') { "https://github.com/organizations/$($cfg.GitHubOrg)/settings/apps/new" } else { 'https://github.com/settings/apps/new' }
     $appSettingsUrl = if ($owner.type -eq 'Organization') { "https://github.com/organizations/$($cfg.GitHubOrg)/settings/apps" } else { 'https://github.com/settings/apps' }

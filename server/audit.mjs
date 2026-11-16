@@ -11,12 +11,15 @@ const MAX_FIELD = 4000;
 const MAX_EPOCH = 9999999999999;
 
 export const ACTIONS = ['session.signin', 'session.elevate', 'session.elevate.denied', 'session.end', 'change.proposed', 'change.updated', 'change.discarded',
-  'change.approved', 'change.approval.denied', 'change.rejected', 'change.branchupdated', 'change.merged', 'sign.verified', 'sign.verify.failed', 'publish.canary', 'publish.denied', 'promote.proposed', 'promote.denied', 'publish.production'];
+  'change.approved', 'change.approval.denied', 'change.rejected', 'change.branchupdated', 'change.merged', 'sign.verified', 'sign.verify.failed', 'publish.canary', 'publish.denied', 'promote.proposed', 'promote.denied', 'publish.production',
+  'deploy.merged', 'deploy.dispatched', 'deploy.run', 'request.created', 'request.synced', 'request.summarized', 'request.actions', 'request.closed', 'request.summaryrequested',
+  'servicenow.query.saved', 'servicenow.query.deleted', 'emergency.requested', 'emergency.cancelled', 'emergency.rejected', 'emergency.approved',
+  'emergency.executed', 'emergency.failed', 'emergency.result', 'emergency.denied'];
 
 // Only these fields are ever persisted. Anything else on an event is dropped, so a token or secret that ends up on an
 // event object by mistake cannot reach the audit store.
 const FIELDS = ['actorOid', 'actorUpn', 'approverOid', 'selfApproved', 'action', 'target', 'gitSha', 'prNumber', 'requestId',
-  'graphRequestId', 'githubRequestId', 'pimInstance', 'pimState', 'acrs', 'result', 'reason', 'soakDays', 'mode', 'sessionUntil', 'toTarget', 'detail'];
+  'graphRequestId', 'githubRequestId', 'pimInstance', 'pimState', 'acrs', 'result', 'reason', 'soakDays', 'mode', 'sessionUntil', 'toTarget', 'runId', 'detail'];
 const BOOLEAN_FIELDS = new Set(['selfApproved']);
 const NUMBER_FIELDS = new Set(['prNumber', 'soakDays']);
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g;
@@ -120,7 +123,7 @@ export function createAudit({ config, miToken, fetcher = fetch, now = () => Date
 }
 
 const CSV_COLUMNS = ['at', 'action', 'result', 'actorUpn', 'actorOid', 'target', 'reason', 'approverOid', 'selfApproved', 'gitSha', 'prNumber', 'requestId',
-  'graphRequestId', 'githubRequestId', 'pimInstance', 'pimState', 'acrs', 'soakDays', 'mode', 'sessionUntil', 'toTarget', 'detail', 'RowKey'];
+  'graphRequestId', 'githubRequestId', 'pimInstance', 'pimState', 'acrs', 'soakDays', 'mode', 'sessionUntil', 'toTarget', 'runId', 'detail', 'RowKey'];
 export const csvCell = v => {
   let s = v === undefined || v === null ? '' : String(v);
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`; // spreadsheet formula guard

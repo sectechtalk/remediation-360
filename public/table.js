@@ -31,19 +31,23 @@ export function renderTable(host, { columns, rows, empty = 'No rows.' }) {
   const heads = columns.map(c => {
     const th = document.createElement('th');
     th.style.width = (c.width || 140) + 'px';
-    const s = document.createElement('span'); s.className = 'sort';
+    // Real buttons (keyboard and screen readers reach them); the header cell carries aria-sort for the sorted column.
+    const s = document.createElement('button'); s.type = 'button'; s.className = 'sort';
+    if (!c.label) s.setAttribute('aria-label', `Sort by ${c.key}`);
     s.onclick = () => { state.dir = state.sort === c.key && state.dir === 'asc' ? 'desc' : 'asc'; state.sort = c.key; draw(); };
-    const f = document.createElement('span'); f.className = 'flt'; f.textContent = '▾'; f.title = 'Filter';
-    f.onclick = ev => { ev.stopPropagation(); openMenu(th, c); };
+    const f = document.createElement('button'); f.type = 'button'; f.className = 'flt'; f.textContent = '▾'; f.title = 'Filter';
+    f.setAttribute('aria-label', `Filter ${c.label || c.key}`); f.setAttribute('aria-haspopup', 'true'); f.setAttribute('aria-expanded', 'false');
+    f.onclick = ev => { ev.stopPropagation(); openMenu(th, c, f); };
     const g = document.createElement('span'); g.className = 'grip';
     g.onmousedown = ev => { const x0 = ev.clientX, w0 = th.offsetWidth; const mv = e => { th.style.width = Math.max(50, w0 + e.clientX - x0) + 'px'; }; const up = () => { removeEventListener('mousemove', mv); removeEventListener('mouseup', up); }; addEventListener('mousemove', mv); addEventListener('mouseup', up); };
     th.append(s, f, g); hr.append(th);
-    return { c, s, f };
+    return { c, s, f, th };
   });
   const draw = () => {
     for (const h of heads) {
       h.s.textContent = h.c.label + (state.sort === h.c.key ? (state.dir === 'asc' ? ' ▲' : ' ▼') : '');
       h.f.className = 'flt' + (state.filters[h.c.key] ? ' on' : '');
+      if (state.sort === h.c.key) h.th.setAttribute('aria-sort', state.dir === 'asc' ? 'ascending' : 'descending'); else h.th.removeAttribute('aria-sort');
     }
     const view = sortRows(applyFilters(rows, state.filters), state.sort, state.dir);
     count.textContent = `${view.length} of ${rows.length} row(s)`;
@@ -59,8 +63,9 @@ export function renderTable(host, { columns, rows, empty = 'No rows.' }) {
       }
     }
   };
-  const openMenu = (th, c) => {
+  const openMenu = (th, c, btn) => {
     document.querySelectorAll('.menu').forEach(m => m.remove());
+    document.querySelectorAll('th .flt[aria-expanded="true"]').forEach(b => b.setAttribute('aria-expanded', 'false'));
     const values = distinctValues(rows, c.key);
     const allowed = state.filters[c.key] || new Set(values);
     const m = document.createElement('div'); m.className = 'menu';
@@ -70,8 +75,14 @@ export function renderTable(host, { columns, rows, empty = 'No rows.' }) {
     ac.onchange = () => { boxes.forEach(b => { b.checked = ac.checked; }); apply(); };
     boxes.forEach(b => { b.onchange = apply; });
     m.onclick = ev => ev.stopPropagation();
-    th.append(m);
-    setTimeout(() => addEventListener('click', () => m.remove(), { once: true }));
+    // Escape closes the menu and puts focus back on its button; a click anywhere else closes it.
+    const close = () => { m.remove(); btn?.setAttribute('aria-expanded', 'false'); removeEventListener('keydown', onKey); };
+    const onKey = ev => { if (ev.key === 'Escape') { close(); btn?.focus(); } };
+    m.setAttribute('role', 'group'); m.setAttribute('aria-label', `Filter ${c.label || c.key}`);
+    th.append(m); btn?.setAttribute('aria-expanded', 'true');
+    addEventListener('keydown', onKey);
+    ac.focus();
+    setTimeout(() => addEventListener('click', close, { once: true }));
   };
   draw();
 }

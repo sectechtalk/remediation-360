@@ -1,11 +1,12 @@
 // Managed identity tokens (user-assigned id-r360). No secret, certificate or key is stored anywhere.
-// Container Apps injects IDENTITY_ENDPOINT and IDENTITY_HEADER.
+// Container Apps injects IDENTITY_ENDPOINT and IDENTITY_HEADER. Local hosting on DEVICE02 sets the same two variables to
+// tools/r360-identity-helper.mjs, which serves tokens for the PC's Azure Arc managed identity (same protocol).
 export function createManagedIdentity({ clientId, env = process.env, fetcher = fetch, now = () => Date.now() }) {
   const cache = new Map();
   return async function miToken(resource) {
     const hit = cache.get(resource);
     if (hit && hit.expires - 300000 > now()) return hit.token;
-    if (!env.IDENTITY_ENDPOINT || !env.IDENTITY_HEADER) throw new Error('Managed identity is not available (IDENTITY_ENDPOINT missing). r360 runs hosted only.');
+    if (!env.IDENTITY_ENDPOINT || !env.IDENTITY_HEADER) throw new Error('Managed identity is not available (IDENTITY_ENDPOINT missing). r360 needs a managed identity (Container Apps, or the local identity helper).');
     const url = new URL(env.IDENTITY_ENDPOINT);
     url.searchParams.set('resource', resource);
     url.searchParams.set('api-version', '2019-08-01');

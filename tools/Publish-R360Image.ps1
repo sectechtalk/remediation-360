@@ -37,7 +37,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Docker engine is not running. Start Docker Des
 if ($os -ne 'linux') { throw "Docker is in $os container mode. Switch Docker Desktop to Linux containers." }
 $dockerCfg = Join-Path $HOME '.docker/config.json'
 if (-not ((Test-Path $dockerCfg) -and ((Get-Content $dockerCfg -Raw) -match '"ghcr\.io"'))) {
-    throw 'Docker is not logged in to ghcr.io. Run: gh auth token | docker login ghcr.io -u sectechtalk --password-stdin'
+    throw 'Docker is not logged in to ghcr.io. Run: gh auth token | docker login ghcr.io -u your-org --password-stdin'
 }
 $acct = Invoke-R360Az -Arguments @('account', 'show') -AllowFailure
 if (-not $acct) { throw 'az is not signed in. Run: az login' }
@@ -71,7 +71,7 @@ try {
         docker build --pull -t $ref . | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'docker build failed.' }
         docker push $ref | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw 'docker push failed. If ghcr said denied, the ghcr.io login lacks write:packages. Run: gh auth refresh -h github.com -s write:packages,read:packages; gh auth token | docker login ghcr.io -u sectechtalk --password-stdin' }
+        if ($LASTEXITCODE -ne 0) { throw 'docker push failed. If ghcr said denied, the ghcr.io login lacks write:packages. Run: gh auth refresh -h github.com -s write:packages,read:packages; gh auth token | docker login ghcr.io -u your-org --password-stdin' }
     }
 }
 finally { Pop-Location }

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { VAULT_RESOURCE } from './identity.mjs';
 import { BRANCH_RE, allowedPath } from './remediation-schema.mjs';
+import { sameOwner } from './deploy-targets.mjs';
 
 // r360 reads GitHub as the GitHub App r360-github-app. The app JWT (RS256) is signed by the Key Vault key
 // github-app-r360 (RSA-HSM, non-exportable) through the managed identity. The key never leaves Key Vault and no
@@ -34,10 +35,12 @@ export function createGitHubApp({ config, miToken, fetcher = fetch, now = () => 
     return `${input}.${value}`;
   }
 
-  // One installation token, narrowed to this repository and to exactly the permissions asked for.
-  async function mint(permissions, what) {
+  // One installation token, narrowed to ONE repository and to exactly the permissions asked for. The repository is the
+  // remediations repo unless a deployment target names another repository of the same owner (same installation).
+  async function mint(permissions, what, repoFull = config.repo) {
+    if (!sameOwner(repoFull, config.repo)) throw new Error(`Refusing a token for ${repoFull}: not a repository of the r360 GitHub App owner`);
     const jwt = await appJwt();
-    const repoName = config.repo.split('/')[1];
+    const repoName = repoFull.split('/')[1];
     const res = await fetcher(`${api}/app/installations/${config.githubInstallationId}/access_tokens`, {
       method: 'POST', headers: { ...ua, Accept: 'application/vnd.github+json', Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ repositories: [repoName], permissions }), signal: AbortSignal.timeout(15000),
@@ -327,8 +330,141 @@ export function createGitHubApp({ config, miToken, fetcher = fetch, now = () => 
     return { meta: JSON.parse(out['remediation.json']), detect: out['detect.ps1'], remediate: out['remediate.ps1'], raw: out };
   }
 
+  // ---- Deployments lane: read and act on a deployment target's repository (its Terraform workflow runs and pull requests) ----
+  // r360 is the control plane; GitHub Actions does the running. Reads use one cached read token per target repository; a
+  // merge or a workflow dispatch mints its own token for that one repository and action, which is not cached.
+  const deployRead = new Map();
+  const needRepo = r => { if (typeof r !== 'string' || !/^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/.test(r) || !sameOwner(r, config.repo)) throw new Error(`Refusing repository ${r}`); return r; };
+  async function deployToken(r) {
+    const hit = deployRead.get(r);
+    if (hit && hit.expires - 300000 > now()) return hit.token;
+    const t = await mint({ actions: 'read', contents: 'read', metadata: 'read', pull_requests: 'read', checks: 'read' }, 'deploy-read', r);
+    deployRead.set(r, t);
+    return t.token;
+  }
+  const deployGet = async (r, path) => call(await deployToken(needRepo(r)), 'GET', `/repos/${r}${path}`);
+  const WORKFLOW_RE = /^[A-Za-z0-9._-]{1,100}\.ya?ml$/;
+  const run1 = x => ({ id: x.id, name: x.name || '', title: x.display_title || '', event: x.event, status: x.status, conclusion: x.conclusion || null, headSha: x.head_sha, headBranch: x.head_branch || null,
+    url: x.html_url, createdAt: x.created_at, updatedAt: x.updated_at, startedAt: x.run_started_at || x.created_at, actor: x.triggering_actor?.login || x.actor?.login || null,
+    attempt: x.run_attempt || 1, pullNumbers: (x.pull_requests || []).map(p => p.number).filter(Number.isInteger) });
+
+  async function deployRuns(r, workflow, { perPage = 30 } = {}) {
+    if (!WORKFLOW_RE.test(workflow || '')) throw new Error('Refusing workflow name');
+    const j = await deployGet(r, `/actions/workflows/${encodeURIComponent(workflow)}/runs?per_page=${Math.min(Math.max(1, perPage), 100)}`);
+    return (j.workflow_runs || []).map(run1);
+  }
+  async function deployRunJobs(r, runId) {
+    const j = await deployGet(r, `/actions/runs/${Number(runId)}/jobs?per_page=30`);
+    return (j.jobs || []).map(x => ({ name: x.name, status: x.status, conclusion: x.conclusion || null, url: x.html_url || null, steps: (x.steps || []).map(s => ({ name: s.name, status: s.status, conclusion: s.conclusion || null })) }));
+  }
+  const pull1 = (r, p) => ({ number: p.number, state: p.state, merged: !!p.merged_at, draft: !!p.draft, title: p.title || '', url: p.html_url, author: p.user?.login || null, branch: p.head?.ref || null,
+    headSha: p.head?.sha || null, headRepo: p.head?.repo?.full_name || null, base: p.base?.ref || null, sameRepo: p.head?.repo?.full_name === r, createdAt: p.created_at, updatedAt: p.updated_at, mergeSha: p.merged_at ? p.merge_commit_sha || null : null });
+  async function deployPulls(r, base) {
+    const ps = await deployGet(r, `/pulls?state=open&base=${encodeURIComponent(base)}&sort=updated&direction=desc&per_page=30`);
+    return ps.map(p => pull1(r, p));
+  }
+  async function deployPull(r, number) { return pull1(r, await deployGet(r, `/pulls/${Number(number)}`)); }
+  // The newest plan comment the deploy workflow left on a pull request: <!-- r360:plan {...} --> (written by the github-actions bot).
+  async function deployPlanComment(r, number) {
+    const cs = await deployGet(r, `/issues/${Number(number)}/comments?per_page=100`);
+    for (const c of [...cs].reverse()) {
+      if (c.user?.type !== 'Bot' && c.user?.login !== 'github-actions[bot]') continue;
+      const p = parsePlanBlock(c.body);
+      if (p) return { ...p, url: c.html_url || null, at: c.updated_at || c.created_at || null };
+    }
+    return null;
+  }
+  // Squash merge pinned to the exact head sha (GitHub refuses with 409 if the branch moved). The push to the target branch is
+  // what starts the apply run, behind the target's GitHub environment.
+  async function mergeDeployPull({ repo: r, number, sha, title, message }) {
+    needRepo(r); needSha(sha);
+    const { token } = await mint({ contents: 'write', pull_requests: 'write', metadata: 'read' }, 'deploy-write', r);
+    const pr = await call(token, 'GET', `/repos/${r}/pulls/${Number(number)}`);
+    if (pr.state !== 'open') throw conflict('The pull request is not open.');
+    if (pr.head?.sha !== sha) throw conflict('The pull request changed after its plan was shown. Reload it first.');
+    const m = await call(token, 'PUT', `/repos/${r}/pulls/${Number(number)}/merge`, { merge_method: 'squash', sha, commit_title: String(title).slice(0, 250), commit_message: String(message).slice(0, 60000) });
+    const githubRequestId = lastRequestId;
+    if (!m?.merged || !SHA.test(m.sha || '')) throw Object.assign(new Error(`GitHub did not merge the pull request: ${String(m?.message || 'no reason given').slice(0, 150)}`), { status: 409, githubRequestId });
+    return { mergeSha: m.sha, githubRequestId };
+  }
+  // workflow_dispatch on the target branch. Needs the App permission actions:write on the target repository.
+  async function dispatchDeployWorkflow({ repo: r, workflow, ref, inputs }) {
+    needRepo(r);
+    if (!WORKFLOW_RE.test(workflow || '')) throw new Error('Refusing workflow name');
+    const { token } = await mint({ actions: 'write', metadata: 'read' }, 'deploy-dispatch', r);
+    await call(token, 'POST', `/repos/${r}/actions/workflows/${encodeURIComponent(workflow)}/dispatches`, { ref, inputs });
+    return { githubRequestId: lastRequestId };
+  }
+
+  // ---- change requests: GitHub issues on config.changeRepo only ----
+  // Reads use a cached issues:read token; every write mints its own issues:write token for that one action and drops it.
+  // Pull requests share the issue number space, so every call checks it is an issue, not a pull request.
+  const crRepo = () => { if (!config.changeRepo) throw new Error('Change requests are not configured'); return config.changeRepo; };
+  let issueReadInst = null;
+  async function issueReadCall(path) {
+    if (!issueReadInst || issueReadInst.expires - 300000 <= now()) issueReadInst = await mint({ issues: 'read', metadata: 'read' }, 'issues-read', crRepo());
+    return call(issueReadInst.token, 'GET', `/repos/${crRepo()}${path}`);
+  }
+  async function issueWriteToken() { return (await mint({ issues: 'write', metadata: 'read' }, 'issues-write', crRepo())).token; }
+  const issueOf = i => ({ number: i.number, title: i.title, state: i.state, stateReason: i.state_reason || null, body: i.body || '', url: i.html_url,
+    labels: (i.labels || []).map(l => (typeof l === 'string' ? l : l.name)), createdAt: i.created_at, updatedAt: i.updated_at, closedAt: i.closed_at || null, comments: i.comments || 0, isPull: Boolean(i.pull_request) });
+  const commentOf = c => ({ id: c.id, body: c.body || '', createdAt: c.created_at, url: c.html_url, author: c.user?.login || '' });
+  async function listIssues({ label, state = 'open', max = 100 }) {
+    const rows = await issueReadCall(`/issues?state=${state}&labels=${encodeURIComponent(label)}&sort=created&direction=desc&per_page=${Math.min(max, 100)}`);
+    return rows.map(issueOf).filter(i => !i.isPull);
+  }
+  async function getIssue(number) { return issueOf(await issueReadCall(`/issues/${Number(number)}`)); }
+  async function issueComments(number, { max = 300 } = {}) {
+    const out = [];
+    for (let page = 1; out.length < max && page <= Math.ceil(max / 100); page++) {
+      const rows = await issueReadCall(`/issues/${Number(number)}/comments?per_page=100&page=${page}`);
+      out.push(...rows.map(commentOf));
+      if (rows.length < 100) break;
+    }
+    return out;
+  }
+  async function createIssue({ title, body, labels }) {
+    const token = await issueWriteToken();
+    const i = await call(token, 'POST', `/repos/${crRepo()}/issues`, { title: String(title).slice(0, 250), body: String(body).slice(0, 60000), labels });
+    return { ...issueOf(i), githubRequestId: lastRequestId };
+  }
+  async function commentOnIssue({ number, body, token }) {
+    const t = token || await issueWriteToken();
+    const c = await call(t, 'POST', `/repos/${crRepo()}/issues/${Number(number)}/comments`, { body: String(body).slice(0, 60000) });
+    return { ...commentOf(c), githubRequestId: lastRequestId };
+  }
+  async function addIssueLabels({ number, labels }) {
+    const token = await issueWriteToken();
+    const r = await call(token, 'POST', `/repos/${crRepo()}/issues/${Number(number)}/labels`, { labels });
+    return { labels: (r || []).map(l => l.name), githubRequestId: lastRequestId };
+  }
+  async function closeIssue({ number, comment, reason = 'completed' }) {
+    const token = await issueWriteToken();
+    if (comment) await commentOnIssue({ number, body: comment, token });
+    const i = await call(token, 'PATCH', `/repos/${crRepo()}/issues/${Number(number)}`, { state: 'closed', state_reason: reason === 'not_planned' ? 'not_planned' : 'completed' });
+    return { ...issueOf(i), githubRequestId: lastRequestId };
+  }
+  async function updateIssue({ number, title, body }) {
+    const token = await issueWriteToken();
+    const i = await call(token, 'PATCH', `/repos/${crRepo()}/issues/${Number(number)}`, { ...(title ? { title: String(title).slice(0, 250) } : {}), ...(body ? { body: String(body).slice(0, 60000) } : {}) });
+    return { ...issueOf(i), githubRequestId: lastRequestId };
+  }
+
   return { appJwt, installationToken, catalog, readChangeFiles, listPulls, getPull, proposeChange, updateChange, discardChange,
-    getChecks, behindBy, unresolvedThreads, commentOnPull, rejectChange, mergeChange, updateBranch, signingRun, downloadSignedArtifact };
+    getChecks, behindBy, unresolvedThreads, commentOnPull, rejectChange, mergeChange, updateBranch, signingRun, downloadSignedArtifact,
+    deployRuns, deployRunJobs, deployPulls, deployPull, deployPlanComment, mergeDeployPull, dispatchDeployWorkflow,
+    listIssues, getIssue, issueComments, createIssue, commentOnIssue, closeIssue, updateIssue, addIssueLabels, issueWriteToken };
+}
+
+// The machine line the deploy workflow puts in its plan comment. Counts are whole numbers; sha is the commit that was planned.
+export function parsePlanBlock(body) {
+  const m = /<!-- r360:plan (\{[^\n]*?\}) -->/.exec(body || '');
+  if (!m) return null;
+  let j;
+  try { j = JSON.parse(m[1]); } catch { return null; }
+  const n = v => (Number.isInteger(v) && v >= 0 && v < 1e6 ? v : null);
+  if (j?.v !== 1 || !/^[0-9a-f]{40}$/.test(j.sha || '')) return null;
+  return { sha: j.sha, add: n(j.add), change: n(j.change), destroy: n(j.destroy), noChanges: j.noChanges === true, exitCode: Number.isInteger(j.exitCode) ? j.exitCode : null };
 }
 
 // approvers.json: fail closed when missing or invalid (design section 5).

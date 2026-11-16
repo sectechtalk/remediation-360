@@ -1,31 +1,64 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>r360 - Remediation 360</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Remediation 360</title>
 <link rel="stylesheet" href="/style.css">
+<script src="/theme.js"></script>
+<script type="module" src="/shell.js"></script>
 <script type="module" src="/app.js"></script>
 </head>
 <body>
-<div id="banners"></div>
-<header class="top">
-  <span class="brand">r360</span>
-  <nav id="nav">
-    <a href="#remediations" data-view="remediations">Remediations</a>
-    <a href="#changes" data-view="changes">Changes</a>
-    <a href="#rollouts" data-view="rollouts">Rollouts</a>
-    <a href="#fleet" data-view="fleet">Fleet</a>
-    <a href="#emergency" data-view="emergency">Emergency</a>
-    <a href="#certificates" data-view="certificates">Certificates</a>
-    <a href="#audit" data-view="audit">Audit</a>
-    <a href="#settings" data-view="settings">Settings</a>
+<div class="shell">
+  <nav class="rail" id="rail" data-rail aria-label="Main">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-opacity=".25" stroke-width="3"/>
+        <path d="M16 3a13 13 0 0 1 13 13" fill="none" stroke="#c4651f" stroke-width="3" stroke-linecap="round"/>
+        <path d="M10.5 16.5l3.5 3.5 7.5-8" fill="none" stroke="#c4651f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div><div class="brand-name">Remediation 360</div><div class="brand-sub">Changes · Rollouts</div></div>
+    </div>
+    <div id="app-switcher" class="app-switcher" data-app="r-360"></div>
+    <div id="nav" class="nav-sections">
+      <div class="nav-group"><button type="button" class="nav-label" aria-expanded="true" data-section="new-hire"><span>New hire</span><span class="nav-chevron" aria-hidden="true"></span></button>
+        <a class="nav-item" href="#overview" data-view="overview"><span data-nav-icon="compass"></span>Overview</a>
+        <a class="nav-item" href="#paths" data-view="paths"><span data-nav-icon="timer"></span>Fast or slow path</a>
+        <a class="nav-item" href="#support" data-view="support"><span data-nav-icon="badge-check"></span>What works where</a>
+        <a class="nav-item" href="#licenses" data-view="licenses"><span data-nav-icon="receipt"></span>Licenses by feature</a>
+      </div>
+      <div class="nav-group"><button type="button" class="nav-label" aria-expanded="true" data-section="change"><span>Change</span><span class="nav-chevron" aria-hidden="true"></span></button>
+        <a class="nav-item" href="#remediations" data-view="remediations"><span data-nav-icon="wrench"></span>Remediations</a>
+        <a class="nav-item" href="#changes" data-view="changes"><span data-nav-icon="git-pull-request"></span>Changes</a>
+        <a class="nav-item" href="#deployments" data-view="deployments"><span data-nav-icon="rocket"></span>Deployments</a>
+        <a class="nav-item" href="#requests" data-view="requests"><span data-nav-icon="clipboard-list"></span>Change requests</a>
+        <a class="nav-item" href="#servicenow" data-view="servicenow"><span data-nav-icon="ticket"></span>ServiceNow</a>
+        <a class="nav-item" href="#templates" data-view="templates"><span data-nav-icon="blocks"></span>Action Templates</a>
+      </div>
+      <div class="nav-group"><button type="button" class="nav-label" aria-expanded="true" data-section="roll-out"><span>Roll out</span><span class="nav-chevron" aria-hidden="true"></span></button>
+        <a class="nav-item" href="#rollouts" data-view="rollouts"><span data-nav-icon="gauge"></span>Rollouts</a>
+        <a class="nav-item" href="#fleet" data-view="fleet"><span data-nav-icon="laptop"></span>Fleet</a>
+        <a class="nav-item" href="#emergency" data-view="emergency"><span data-nav-icon="siren"></span>Emergency</a>
+        <a class="nav-item" href="#certificates" data-view="certificates"><span data-nav-icon="file-badge"></span>Certificates</a>
+      </div>
+      <div class="nav-group"><button type="button" class="nav-label" aria-expanded="true" data-section="govern"><span>Govern</span><span class="nav-chevron" aria-hidden="true"></span></button>
+        <a class="nav-item" href="#audit" data-view="audit"><span data-nav-icon="scroll-text"></span>Audit</a>
+        <a class="nav-item" href="#settings" data-view="settings"><span data-nav-icon="settings"></span>Settings</a>
+      </div>
+    </div>
+    <div class="rail-tools"><button id="theme-toggle" class="btn" type="button" aria-pressed="false"><span class="theme-label">Dark mode</span></button></div>
+    <div class="rail-foot">
+      <span id="who"></span>
+      <span id="writectl"></span>
+      <form method="post" action="/auth/signout"><button class="btn" type="submit">Sign out</button></form>
+    </div>
   </nav>
-  <span class="spacer"></span>
-  <span id="who"></span>
-  <span id="writectl"></span>
-  <form method="post" action="/auth/signout"><button class="btn" type="submit">Sign out</button></form>
-</header>
-<main id="view"></main>
+  <div class="main">
+    <button id="nav-toggle" class="btn nav-toggle" type="button" aria-controls="rail" aria-expanded="false">Menu</button>
+    <div id="banners"></div>
+    <main id="view"></main>
+  </div>
+</div>
 </body>
 </html>

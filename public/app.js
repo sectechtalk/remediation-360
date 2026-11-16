@@ -1,9 +1,13 @@
 import { renderTable } from './table.js';
 import { createChangesUi } from './changes.js';
+import { createDeploymentsUi } from './deployments.js';
+import { createRequestsUi } from './requests.js';
+import { createServiceNowUi } from './servicenow.js';
+import { createGuideUi } from './guide.js';
+import { createEmergencyUi } from './emergency.js';
 
 // Each dataset has exactly one home page (no duplicated data).
-const STUBS = { rollouts: ['Rollouts', 3, 'Canary run on DEVICE01, widen, retire, certificate profile management.'],
-  emergency: ['Emergency', 4, 'Two-person Defender and Intune actions, 4 hours, 1 device.'] };
+const STUBS = { rollouts: ['Rollouts', 3, 'Canary run on DEVICE01, widen, retire, certificate profile management.'] };
 const PT = { timeZone: 'America/Los_Angeles', dateStyle: 'medium', timeStyle: 'short' };
 export const fmtTime = v => v ? `${new Date(v).toLocaleString('en-US', PT)} PT` : '';
 const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids.filter(k => k != null)); return e; };
@@ -43,7 +47,20 @@ const statusCls = s => ({ 'In sync': 'ok', 'Drift': 'bad', 'Not in Intune': 'war
 const outcomeCls = s => ({ 'Without issues': 'ok', 'Issue fixed': 'ok', 'Failed': 'bad', 'Issue detected': 'warn', 'Pending': 'warn' }[s] || 'muted');
 
 const changesUi = createChangesUi({ el, pill, api, view, fmtTime, session });
+const deploymentsUi = createDeploymentsUi({ el, pill, api, view, fmtTime, session });
+const requestsUi = createRequestsUi({ el, pill, api, view, fmtTime, session });
+const servicenowUi = createServiceNowUi({ el, api, view, fmtTime });
+const guideUi = createGuideUi({ el, pill, view });
+const emergencyUi = createEmergencyUi({ el, pill, api, view, fmtTime, session });
 const VIEWS = {
+  overview: () => guideUi.overview(),
+  paths: () => guideUi.paths(),
+  support: () => guideUi.support(),
+  licenses: () => guideUi.licenses(),
+  emergency: () => emergencyUi.page(),
+  deployments: () => deploymentsUi.deployments(),
+  requests: () => requestsUi.requests(),
+  servicenow: () => servicenowUi.page(),
   changes: () => changesUi.changes(),
   new: () => changesUi.new(),
   edit: key => changesUi.edit(key),
@@ -126,7 +143,7 @@ const VIEWS = {
   }),
 };
 const RANGES = { '24h': ['Last 24 hours', 1], '7d': ['Last 7 days', 7], '30d': ['Last 30 days', 30], '90d': ['Last 90 days', 90], '365d': ['Last 12 months', 365] };
-const actionCls = a => (a.endsWith('.denied') || a.endsWith('.failed') ? 'bad' : a === 'change.discarded' || a === 'change.rejected' || a.includes('elevate') ? 'warn' : a.startsWith('change.') ? 'ok' : 'muted');
+const actionCls = a => (a.endsWith('.denied') || a.endsWith('.failed') ? 'bad' : a.startsWith('deploy.') || a.startsWith('request.') ? 'ok' : a === 'change.discarded' || a === 'change.rejected' || a.includes('elevate') ? 'warn' : a.startsWith('change.') ? 'ok' : 'muted');
 VIEWS.audit = () => {
   const range = el('select', {}, ...Object.entries(RANGES).map(([k, [label]]) => el('option', { value: k, textContent: label })));
   range.value = '7d';
@@ -160,6 +177,7 @@ VIEWS.audit = () => {
         { key: 'selfApproved', label: 'Self-approved', width: 100 },
         { key: 'gitSha', label: 'Git', width: 90 },
         { key: 'prNumber', label: 'PR', width: 60 },
+        { key: 'runId', label: 'Run', width: 110 },
         { key: 'pimState', label: 'PIM', width: 220 },
         { key: 'acrs', label: 'Auth context', width: 100 },
         { key: 'sessionUntil', label: 'Session until', width: 190, render: r => fmtTime(r.sessionUntil) },
@@ -178,13 +196,21 @@ VIEWS.audit = () => {
   load();
 };
 for (const [k, [title, phase, what]] of Object.entries(STUBS)) VIEWS[k] = () => view().replaceChildren(el('h1', { textContent: title }), el('p', { className: 'muted', textContent: `Coming in phase ${phase}. ${what}` }));
+// Placeholder until Action Templates are built: named actions (often just a script) picked for items from a ServiceNow query.
+VIEWS.templates = () => view().replaceChildren(el('h1', { textContent: 'Action Templates' }),
+  el('p', { className: 'muted', textContent: 'Coming soon. An action template is a named action r360 can take on items from a ServiceNow query, for example "Update certificate template" for the results of a "renew certificates" query. A template may simply point to a script.' }));
 
+export const DEFAULT_VIEW = 'overview';
 function route() {
-  const [name, arg] = (location.hash || '#remediations').slice(1).split('/');
-  const v = Object.hasOwn(VIEWS, name) ? name : 'remediations';
+  // r360 opens on New hire > Overview, so a first-time visitor lands on the page written for them.
+  const [name, arg] = (location.hash || `#${DEFAULT_VIEW}`).slice(1).split('/');
+  const v = Object.hasOwn(VIEWS, name) ? name : DEFAULT_VIEW;
   const tab = { new: 'remediations', edit: 'remediations', update: 'changes' }[v] || v;
   changesUi.stop();
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('active', a.dataset.view === tab));
+  deploymentsUi.stop();
+  requestsUi.stop();
+  emergencyUi.stop();
+  document.querySelectorAll('#nav a').forEach(a => { a.classList.toggle('active', a.dataset.view === tab); if (a.dataset.view === tab) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
   VIEWS[v](arg ? decodeURIComponent(arg) : '');
 }
 // Write session: the server decides and enforces it; this only shows it. Red banner while elevated, with an End button.

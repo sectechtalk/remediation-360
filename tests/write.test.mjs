@@ -84,7 +84,7 @@ test('unauthenticated write routes redirect to sign-in or return 401', async () 
   const srv = app.listen(0); await new Promise(r => srv.once('listening', r));
   try {
     const base = `http://127.0.0.1:${srv.address().port}`;
-    let r = await fetch(`${base}/auth/write/start`, { redirect: 'manual' }); assert.equal(r.status, 302); assert.equal(r.headers.get('location'), '/auth/signin');
+    let r = await fetch(`${base}/auth/write/start`, { redirect: 'manual' }); assert.equal(r.status, 302); assert.equal(r.headers.get('location'), '/auth/signin?next=write');
     r = await fetch(`${base}/auth/write/callback?code=x&state=y`, { redirect: 'manual' }); assert.equal(r.status, 302);
     r = await fetch(`${base}/auth/write/end`, { method: 'POST' }); assert.equal(r.status, 401);
     r = await fetch(`${base}/api/audit`); assert.equal(r.status, 401);

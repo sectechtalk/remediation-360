@@ -28,7 +28,7 @@ function Get-R360Config {
         ContainerApp         = 'app-r360'
         PlaceholderImage     = 'mcr.microsoft.com/k8se/quickstart:latest'
         RepoRoot             = (Split-Path $PSScriptRoot -Parent)
-        GitHubOrg            = 'sectechtalk'
+        GitHubOrg            = 'your-org'
         ProductRepo          = 'r360'
         RemediationsRepo     = 'remediations'
         GitHubAppName        = 'r360-github-app'

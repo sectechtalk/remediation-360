@@ -3,16 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Remediation 360: Intune remediations dashboard (Phase 1, read-only)",
+  "description": "Remediation 360: Intune remediations, deployments and change requests",
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "start": "node server/index.mjs",
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check server/index.mjs && node --check server/audit.mjs && node --check server/write.mjs && node --check public/app.js && node --check public/table.js && node --check public/changes.js && node --check server/changes.mjs && node --check server/github.mjs && node --check server/remediation-schema.mjs && node --check server/foureyes.mjs && node --check server/signing.mjs && node --check server/intune.mjs && node --check server/soak.mjs && node --check server/target.mjs"
+    "check": "node --check server/index.mjs && node --check server/audit.mjs && node --check server/write.mjs && node --check public/app.js && node --check public/guide.js && node --check public/emergency.js && node --check server/defender.mjs && node --check server/emergency.mjs && node --check public/table.js && node --check public/changes.js && node --check server/changes.mjs && node --check server/github.mjs && node --check server/remediation-schema.mjs && node --check server/foureyes.mjs && node --check server/signing.mjs && node --check server/intune.mjs && node --check server/soak.mjs && node --check server/target.mjs && node --check server/deployments.mjs && node --check server/deploy-targets.mjs && node --check public/deployments.js && node --check server/requests.mjs && node --check server/mailbox.mjs && node --check server/llm.mjs && node --check server/csp-report.mjs && node --check public/requests.js && node --check public/shell.js && node --check public/nav-sections.js && node --check public/360-icons.js && node --check public/360-apps.js && node --check public/theme.js && node --check tools/summarize-change.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@azure/msal-node": "^3.8.0",
     "ajv": "^8.20.0",
     "express": "^5.1.0",

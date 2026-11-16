@@ -7,6 +7,14 @@ import { createWrite, csrfGuard, resolveRoles } from './write.mjs';
 import { toCsv } from './audit.mjs';
 import { createChanges } from './changes.mjs';
 import { createIntune } from './intune.mjs';
+import { createDeployments } from './deployments.mjs';
+import { createRequests } from './requests.mjs';
+import { createMailbox } from './mailbox.mjs';
+import { createLlm } from './llm.mjs';
+import { createServiceNowSearch } from './servicenow.mjs';
+import { createCspReports, REPORT_ONLY_POLICY } from './csp-report.mjs';
+import { createDefender } from './defender.mjs';
+import { createEmergency, REQUEST_ROLES, APPROVE_ROLES } from './emergency.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const CACHE_MS = 60000;
@@ -15,17 +23,24 @@ export const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' https://login.microsoftonline.com",
   'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Strict-Transport-Security': 'max-age=31536000',
   'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY',
+  // Trusted Types, report-only: nothing is blocked; violations are posted to /csp-report (see csp-report.mjs).
+  'Content-Security-Policy-Report-Only': REPORT_ONLY_POLICY,
 };
 
 // Reads are GET. State-changing routes (sign-out, ending a write session, and the writes S3 adds) pass the CSRF guard, and
 // anything that writes Intune goes through write.requireWrite(...).
-export function createApp({ config, sessions, auth, data, github, audit, log = console, fetcher = fetch, now = () => Date.now() }) {
+export function createApp({ config, sessions, auth, data, github, audit, log = console, fetcher = fetch, now = () => Date.now(), mailbox = null, llm = null, servicenow = null, defender = null }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
   app.use((req, res, next) => { res.set(SECURITY_HEADERS); next(); });
 
   app.get('/healthz', (req, res) => res.json({ ok: true, image: config.imageTag }));
+  // Browser CSP reports carry no session or CSRF header, so the collector sits before sign-in and the CSRF guard.
+  // It stores at most 200 de-duplicated records (path, file, line, sink; never the sample text) and logs each once.
+  const cspReports = createCspReports({ log: line => log.log?.(line) });
+  app.locals.cspReports = cspReports;
+  app.use(cspReports.router);
 
   const sessionOf = req => sessions.get(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
   const pimGate = async s => { const token = await auth.graphToken(s); return (await data.pim(token, s.user.oid)).gate; };
@@ -36,6 +51,8 @@ export function createApp({ config, sessions, auth, data, github, audit, log = c
   app.get('/auth/signin', async (req, res, next) => {
     try {
       const s = sessionOf(req) || sessions.create();
+      // Only one fixed follow-on is allowed (no open redirect): opening the write link while signed out signs in, then starts the write sign-in.
+      s.afterSignIn = req.query.next === 'write' ? '/auth/write/start' : undefined;
       const url = await auth.beginSignIn(s);
       res.set('Set-Cookie', cookieHeader(s.id, SESSION_TTL / 1000)).redirect(302, url);
     } catch (e) { next(e); }
@@ -49,7 +66,9 @@ export function createApp({ config, sessions, auth, data, github, audit, log = c
       audit.record({ actorOid: s.user.oid, actorUpn: s.user.upn, action: 'session.signin', result: 'ok', target: 'web-session' })
         .then(() => write.reconcileLost(s, (oid, until) => sessions.hasWrite(oid, until)))
         .catch(e => log.error?.(`session.signin: audit failed: ${e.message}`));
-      res.redirect(302, '/');
+      const next = s.afterSignIn === '/auth/write/start' ? s.afterSignIn : '/';
+      delete s.afterSignIn;
+      res.redirect(302, next);
     } catch (e) {
       log.error?.(`sign-in failed: ${e.message}`);
       res.status(e.status === 400 ? 400 : 403).type('html').send(`<!doctype html><title>r360</title><link rel="stylesheet" href="/style.css"><main class="center"><h1>Sign-in failed</h1><p>${escapeHtml(e.status === 400 ? e.message : 'Microsoft Entra did not allow the sign-in. Your account must be assigned to r360 (sg-r360-operators).')}</p><a class="btn" href="/auth/signin">Sign in again</a></main>`);
@@ -70,7 +89,7 @@ export function createApp({ config, sessions, auth, data, github, audit, log = c
   app.use((req, res, next) => {
     const s = sessionOf(req);
     if (s?.user) { req.r360 = s; return next(); }
-    if (req.path.startsWith('/auth/write/')) return req.method === 'GET' ? res.redirect(302, '/auth/signin') : res.status(401).json({ error: 'Sign in required.' });
+    if (req.path.startsWith('/auth/write/')) return req.method === 'GET' ? res.redirect(302, req.path === '/auth/write/start' ? '/auth/signin?next=write' : '/auth/signin') : res.status(401).json({ error: 'Sign in required.' });
     if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Sign in required.' });
     if (req.path === '/' || req.path === '/index.html') return res.redirect(302, '/auth/signin');
     return next();
@@ -179,6 +198,52 @@ export function createApp({ config, sessions, auth, data, github, audit, log = c
 app.get('/api/changes/promote-groups', run(async req => changes.promoteGroups(req.r360.user, (await resolveRoles(github, req.r360.user.oid)).roles, typeof req.query.q === 'string' ? req.query.q : '', { readToken: () => auth.graphToken(req.r360) }), 'The group search failed.'));
 app.post('/api/changes/promote', approver, run(req => changes.promote(req.r360.user, req.r360roles || [], req.body, { readToken: () => auth.graphToken(req.r360) }), 'The promotion could not be created. Check the audit trail for what happened.'));
   app.post('/api/changes/:number/verify-signing', anyChangeRole, run(req => changes.verifySigning(req.r360.user, req.r360roles || [], num(req))));
+
+  // ---- Deployments lane: Terraform changes run by GitHub Actions on target repositories; r360 shows, merges, starts and audits ----
+  const deployments = createDeployments({ config, github, audit, now, log });
+  const deployMerger = write.requireWrite({ roles: ['approver', 'admin'] });
+  const deployRunner = write.requireWrite({ roles: ['author', 'approver', 'admin'] });
+  const TARGET_ID = /^[a-z0-9][a-z0-9-]{1,39}$/;
+  const targetParam = (req, res, next) => (TARGET_ID.test(req.params.target) ? next() : res.status(404).json({ error: 'No such deployment target.' }));
+  app.get('/api/deployments', run(async () => ({ ...(await deployments.list()), fetchedAt: new Date(now()).toISOString() }), 'The deployment targets could not be read.'));
+  app.post('/api/deployments/:target/pulls/:number/merge', targetParam, deployMerger, run(req => deployments.merge(req.r360.user, req.r360roles || [], req.params.target, num(req), req.body), 'The merge could not be completed. Check the audit trail for what happened.'));
+  app.post('/api/deployments/:target/dispatch', targetParam, deployRunner, run(req => deployments.dispatch(req.r360.user, req.r360roles || [], req.params.target, req.body), 'The run could not be started. Check the audit trail for what happened.'));
+
+  // ---- Change requests: email-tracked changes on GitHub issues. Mail is read with the operator's own delegated token. ----
+  const requests = createRequests({ config, github, audit, now, log, mailbox: mailbox || createMailbox({ config, fetcher }), llm: llm || createLlm({ config, fetcher }) });
+  const rolesOf = async req => (await resolveRoles(github, req.r360.user.oid)).roles;
+  const mailToken = req => () => auth.graphToken(req.r360);
+  app.get('/api/requests', run(async req => ({ ...(await requests.list(req.r360.user, { token: mailToken(req), roles: await rolesOf(req) })), fetchedAt: new Date(now()).toISOString() }), 'The change requests could not be read.'));
+  app.post('/api/requests', run(async req => requests.create(req.r360.user, await rolesOf(req), req.body), 'The change request could not be created. Check the audit trail for what happened.'));
+  app.post('/api/requests/sync', run(req => requests.sync(req.r360.user, mailToken(req), { force: true }), 'The mailbox could not be read.'));
+  app.post('/api/requests/:number/summarize', run(async req => requests.summarize(req.r360.user, await rolesOf(req), num(req), { token: mailToken(req) }), 'The summary could not be made. Check the audit trail for what happened.'));
+  app.post('/api/requests/:number/request-summary', run(async req => requests.requestSummary(req.r360.user, await rolesOf(req), num(req)), 'The summary request could not be made. Check the audit trail for what happened.'));
+  app.post('/api/requests/:number/actions', run(async req => requests.actionable(req.r360.user, await rolesOf(req), num(req), { token: mailToken(req) }), 'The action items could not be made. Check the audit trail for what happened.'));
+  app.post('/api/requests/:number/close', run(async req => requests.close(req.r360.user, await rolesOf(req), num(req), req.body), 'The change could not be closed. Check the audit trail for what happened.'));
+
+  // ---- ServiceNow search: read-only queries; each item shows the change request (GitHub issue) that mentions its number. ----
+  const sn = servicenow ? servicenow({ github, requests, audit }) : createServiceNowSearch({ settings: { configured: false }, store: null, github, requests, audit });
+  app.get('/api/servicenow/queries', run(async req => sn.queries(req.r360.user, await rolesOf(req)), 'The ServiceNow queries could not be read.'));
+  app.post('/api/servicenow/search', run(req => sn.search(req.r360.user, req.body), 'The ServiceNow search failed.'));
+  app.post('/api/servicenow/queries', run(async req => sn.saveQuery(req.r360.user, await rolesOf(req), req.body), 'The query could not be saved.'));
+  app.post('/api/servicenow/queries/delete', run(async req => sn.deleteQuery(req.r360.user, await rolesOf(req), req.body?.id), 'The query could not be deleted.'));
+  app.post('/api/servicenow/issue', run(async req => sn.createIssue(req.r360.user, await rolesOf(req), req.body), 'The change request could not be created. Check the audit trail for what happened.'));
+
+  // ---- Emergency (fast path): one Defender action on one device, second-person approval, run as the approver ----
+  // Defender is called only with the caller's own write session, exchanged silently for a Defender token.
+  const emergency = createEmergency({ config, audit, defender: defender || createDefender({ fetcher }), now, log });
+  const emergencyRequester = write.requireWrite({ roles: REQUEST_ROLES });
+  const emergencyApprover = write.requireWrite({ roles: APPROVE_ROLES });
+  const emergencyAny = write.requireWrite({ roles: [...new Set([...REQUEST_ROLES, ...APPROVE_ROLES])] });
+  const defToken = req => () => auth.defenderToken(req.r360write.homeAccountId);
+  const eid = req => String(req.params.id || '');
+  app.get('/api/emergency', run(async () => ({ ...(await emergency.list()), fetchedAt: new Date(now()).toISOString() }), 'The emergency requests could not be read.'));
+  app.get('/api/emergency/readiness', emergencyAny, run(req => emergency.readiness(defToken(req)), 'Defender readiness could not be checked.'));
+  app.get('/api/emergency/machines', emergencyRequester, run(req => emergency.machines(defToken(req), typeof req.query.q === 'string' ? req.query.q : ''), 'Defender devices could not be searched.'));
+  app.post('/api/emergency', emergencyRequester, run(req => emergency.request(req.r360.user, req.body, { token: defToken(req) }), 'The emergency request could not be made. Check the audit trail for what happened.'));
+  app.post('/api/emergency/:id/approve', emergencyApprover, run(req => emergency.approve(req.r360.user, eid(req), { token: defToken(req) }), 'The emergency request could not be approved. Check the audit trail for what happened.'));
+  app.post('/api/emergency/:id/close', emergencyAny, run(req => emergency.close(req.r360.user, req.r360roles || [], eid(req), req.body), 'The emergency request could not be closed. Check the audit trail for what happened.'));
+  app.post('/api/emergency/:id/refresh', emergencyAny, run(req => emergency.refresh(req.r360.user, eid(req), { token: defToken(req) }), 'Defender could not be asked for the status.'));
 
   app.get('/api/remediations', cached('remediations', t => data.remediations(t)));
   app.get('/api/fleet', cached('fleet', t => data.fleet(t)));

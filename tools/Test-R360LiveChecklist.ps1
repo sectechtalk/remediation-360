@@ -12,7 +12,7 @@
 [CmdletBinding()]
 param(
     [string]$RemediationsRepo = 'your-org/remediations',
-    [string]$R360Repo = 'sectechtalk/remediation-360'
+    [string]$R360Repo = 'your-org/r360'
 )
 $ErrorActionPreference = 'Stop'
 $remRepo = $RemediationsRepo

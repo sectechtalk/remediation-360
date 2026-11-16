@@ -31,7 +31,7 @@ Grounded in: docs/remediation-360-design.md (v3.1), server/*.mjs and public/*.js
 - CI (.github/workflows/psscriptanalyzer.yml): job PSScriptAnalyzer (required check) lints, validates schema via Build-RemediationPackage.ps1, and on push to main uploads artifact remediations-<sha> (copies + manifest.json with SHA-256 per file, 90 days). THERE IS NO SIGNING STEP. Sample-RemediationCanary has enforceSignatureCheck=false.
 - Files are CRLF for .ps1 (.gitattributes), LF for json/md/yml.
 - approvers.json on main: Aaron (author, approver, emergencyApprover, admin), user1@ (approver).
-- Ruleset main-protection (25825962), active, no bypass actors: deletion blocked, non_fast_forward, pull_request (0 approvals, dismiss stale reviews, thread resolution required, require_extra_approval_for_unattributed_changes=true but no effect at 0 approvals, merge/squash/rebase allowed), required status check PSScriptAnalyzer with strict_required_status_checks_policy=true (branch must be up to date). Repo: squash/merge/rebase allowed, no auto-merge, branches not auto-deleted. Actions default token permission = read.
+- Ruleset main-protection (87654321), active, no bypass actors: deletion blocked, non_fast_forward, pull_request (0 approvals, dismiss stale reviews, thread resolution required, require_extra_approval_for_unattributed_changes=true but no effect at 0 approvals, merge/squash/rebase allowed), required status check PSScriptAnalyzer with strict_required_status_checks_policy=true (branch must be up to date). Repo: squash/merge/rebase allowed, no auto-merge, branches not auto-deleted. Actions default token permission = read.
 - CODEOWNERS: * @sectechtalk (code-owner review is NOT required by the ruleset).
 
 Implications that shape the plan:
@@ -252,6 +252,6 @@ NOT needed: no new Entra consent, no new Graph or Defender scope, no GitHub App 
 
 Decided in this plan (tell me if you object): signing in CI with jsign and a Windows Verify job; approval recorded in r360 audit bound to head sha (no GitHub review, no new App permission); r360 only merges and approves PRs it created, hand-opened PRs stay read-only; per-event immutable blob write instead of nightly export; waiting steps are observed states (no server job runner); provenance gate at publish until the App-only merge rule is on; no ruleset change in Phase 2.
 ## S7 status (2026-10-27)
-- App-only merge live on your-org/remediations: ruleset r360-app-only-merge (26006752), update rule, sole bypass actor r360 App 1234567 (bypass_mode pull_request). main-protection (25825962) unchanged, so the App still needs PSScriptAnalyzer. Break-glass (owner): pwsh -File tools\Set-R360RulesetAppOnly.ps1 -Remove, then re-run without -Remove.
+- App-only merge live on your-org/remediations: ruleset r360-app-only-merge (26006752), update rule, sole bypass actor r360 App 1234567 (bypass_mode pull_request). main-protection (87654321) unchanged, so the App still needs PSScriptAnalyzer. Break-glass (owner): pwsh -File tools\Set-R360RulesetAppOnly.ps1 -Remove, then re-run without -Remove.
 - Write sessions stay in memory by design (R7); reconcileLost closes lost elevations in the audit log.
 

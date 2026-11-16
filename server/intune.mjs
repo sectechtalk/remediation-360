@@ -7,6 +7,7 @@ import { ALL_DEVICES, graphTargets, groupsOf, isGuid, targetOfAssignments, targe
 // remediations repo, so the CLI and r360 produce the same object.
 export const GRAPH_HOST = 'https://graph.microsoft.com';
 export const HS = '/beta/deviceManagement/deviceHealthScripts';
+export const DC = '/beta/deviceManagement/deviceConfigurations';
 const GROUP_SELECT = 'id,displayName,description,securityEnabled,mailEnabled,groupTypes,membershipRule';
 
 export const sha256Hex = buf => createHash('sha256').update(buf).digest('hex');
@@ -190,6 +191,27 @@ export function createIntune({ fetcher = fetch, sleep = ms => new Promise(r => s
       const [deviceCount, memberCount] = await Promise.all([one('/microsoft.graph.device'), one('')]);
       return { deviceCount, memberCount };
     },
+    // The two code-signing certificate profiles (deviceConfigurations). Reads, and the additive assign the publish step uses.
+    async findConfigsByName(token, displayName) {
+      const out = [];
+      let next = `${DC}?$select=id,displayName`;
+      for (let pages = 0; next && pages < 50; pages++) {
+        const r = track(await request(token, 'GET', next, undefined, { what: 'Read Intune configuration profiles' }));
+        out.push(...(r.json?.value || []));
+        next = r.json?.['@odata.nextLink'] || null;
+        if (next && !next.startsWith(`${GRAPH_HOST}/`)) throw new GraphWriteError('Unexpected nextLink host', { what: 'Read Intune configuration profiles' });
+      }
+      return out.filter(p => p.displayName === displayName);
+    },
+    async readConfig(token, id) {
+      const [p, a] = await Promise.all([
+        request(token, 'GET', `${DC}/${encodeURIComponent(id)}`, undefined, { what: 'Read the code-signing profile' }),
+        request(token, 'GET', `${DC}/${encodeURIComponent(id)}/assignments`, undefined, { what: 'Read the code-signing profile assignments' }),
+      ]);
+      track(p); track(a);
+      return { profile: p.json, assignments: a.json?.value || [] };
+    },
+    async assignConfig(token, id, assignments) { const r = track(await request(token, 'POST', `${DC}/${encodeURIComponent(id)}/assign`, { assignments }, { what: 'Assign the code-signing profile' })); return { requestId: r.requestId }; },
     async create(token, body) { const r = track(await request(token, 'POST', HS, body, { retryOn: [429], what: 'Create the Intune remediation' })); return { id: r.json?.id, requestId: r.requestId }; },
     async update(token, id, body) { const r = track(await request(token, 'PATCH', `${HS}/${encodeURIComponent(id)}`, body, { what: 'Update the Intune remediation' })); return { requestId: r.requestId }; },
     async assign(token, id, body) { const r = track(await request(token, 'POST', `${HS}/${encodeURIComponent(id)}/assign`, body, { what: 'Assign the Intune remediation' })); return { requestId: r.requestId }; },

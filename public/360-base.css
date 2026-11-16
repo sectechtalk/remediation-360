@@ -1,0 +1,68 @@
+/* 360-base.css: the shared look and feel for every 360 app (e-360, r-360, f-360, hm-360, c-360).
+   Copy this file unchanged into each app. App-specific styles go in the app's own stylesheet.
+   Standard agreed 2026-11-15: one font (Inter), one seven-step type scale with a 12px floor,
+   weights 400/500/600, shared neutral and status colours, one accent per app. */
+
+@font-face{font-family:Inter;font-style:normal;font-weight:100 900;font-display:swap;src:url(/fonts/InterVariable.woff2) format("woff2")}
+
+:root{
+  /* Type. Sizes are rem so browser zoom and text-size settings work. Nothing goes below --text-xs. */
+  --font-sans:Inter,system-ui,sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+  --text-xs:.75rem;     /* 12px: table headers, group labels, badges, footnotes */
+  --text-sm:.8125rem;   /* 13px: table cells, secondary text, nav items */
+  --text-base:.875rem;  /* 14px: body, form fields, buttons */
+  --text-md:1rem;       /* 16px: panel and card titles (h3) */
+  --text-lg:1.25rem;    /* 20px: section titles (h2) */
+  --text-xl:1.5rem;     /* 24px: page title (h1) */
+  --text-2xl:1.875rem;  /* 30px: metric numbers */
+  --weight-regular:400;
+  --weight-medium:500;
+  --weight-semibold:600;
+  --leading-tight:1.25;
+  --leading-body:1.5;
+}
+/* Colour. Neutrals and status colours are shared by every app. Each app sets only its accent
+   in its own stylesheet: --accent (links, icons, focus, active nav; 4.5:1 on --surface), --accent-strong (filled
+   buttons and badges, with --accent-ink text at 4.5:1), --accent-soft (selected and hover backgrounds) and
+   --accent-ink. Status never uses the accent.
+   Light is the default; dark applies when the app sets data-theme="dark", or follows the OS when it sets neither. */
+:root{
+  --bg:#f4f6f9;--surface:#ffffff;--surface-2:#eef2f7;--line:#dde3eb;--fg:#15212e;--muted:#5b6878;
+  --ok:#1b7a4a;--ok-soft:#e3f4ea;--warn:#8a5a00;--warn-soft:#fbf1dc;--crit:#b3261e;--crit-soft:#fce6e4;
+  --info:#31608f;--info-soft:#e3edf7;--code-bg:#eff3f8;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){color-scheme:dark;
+    --bg:#121a25;--surface:#1a2433;--surface-2:#1f2a3a;--line:#2a3647;--fg:#dfe7f1;--muted:#9aa8ba;
+    --ok:#5cc985;--ok-soft:#173225;--warn:#e8b454;--warn-soft:#362a12;--crit:#f08a82;--crit-soft:#3d1c1a;
+    --info:#8ab8e6;--info-soft:#182a3b;--code-bg:#151e2b;}
+}
+:root[data-theme="dark"]{color-scheme:dark;
+  --bg:#121a25;--surface:#1a2433;--surface-2:#1f2a3a;--line:#2a3647;--fg:#dfe7f1;--muted:#9aa8ba;
+  --ok:#5cc985;--ok-soft:#173225;--warn:#e8b454;--warn-soft:#362a12;--crit:#f08a82;--crit-soft:#3d1c1a;
+  --info:#8ab8e6;--info-soft:#182a3b;--code-bg:#151e2b;}
+
+:root{font-family:var(--font-sans);font-synthesis:none;color:var(--fg);background:var(--bg)}
+body{font-size:var(--text-base);line-height:var(--leading-body)}
+button,input,select,textarea{font:inherit}
+code,kbd,pre,samp{font-family:var(--font-mono)}
+h1{font-size:var(--text-xl);font-weight:var(--weight-semibold);line-height:var(--leading-tight)}
+h2{font-size:var(--text-lg);font-weight:var(--weight-semibold);line-height:var(--leading-tight)}
+h3{font-size:var(--text-md);font-weight:var(--weight-semibold);line-height:var(--leading-tight)}
+small{font-size:var(--text-xs)}
+table{font-variant-numeric:tabular-nums}
+
+/* Rail (left navigation). Every 360 app uses the same pattern: collapsible section headers (a <button class="nav-label">
+   with a chevron, uppercase, one step larger than the page links under it) and one unique icon per page link.
+   Colours come from each app's stylesheet; these rules set only shape and size. */
+.nav-label{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;margin:0;border:0;border-radius:6px;
+  background:none;color:inherit;font:inherit;font-size:var(--text-base);font-weight:var(--weight-semibold);letter-spacing:.06em;
+  line-height:var(--leading-tight);text-transform:uppercase;text-align:left;cursor:pointer;user-select:none;padding:14px 12px 4px}
+.nav-chevron{flex:0 0 auto;width:6px;height:6px;margin-right:4px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+  transform:rotate(45deg);transition:transform .15s ease;opacity:.8}
+.nav-label[aria-expanded="false"] .nav-chevron{transform:rotate(-45deg)}
+.nav-item{display:flex;align-items:center;gap:12px;font-size:var(--text-sm)}
+.nav-collapsed{display:none!important}
+svg.icon{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+@media (prefers-reduced-motion:reduce){.nav-chevron{transition:none}}

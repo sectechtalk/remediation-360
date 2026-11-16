@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeScript, scriptHash, buildCatalog, driftReasons, runOutcome, fleetRows, gitStamp } from '../server/catalog.mjs';
-import { sha1Thumbprint, profileCertCheck, certDeviceRows } from '../server/certs.mjs';
+import { sha1Thumbprint, profileCertCheck, certDeviceRows, widenProfileAssignments } from '../server/certs.mjs';
 import { summarizePim, ROLE_TEMPLATES } from '../server/pim.mjs';
 import { loadConfig, publicSettings } from '../server/config.mjs';
 import { distinctValues, applyFilters, sortRows, cellText } from '../public/table.js';
@@ -12,6 +12,9 @@ import { ENV } from './fixtures.mjs';
 test('config fails closed when settings are missing (no demo mode)', () => {
   assert.throws(() => loadConfig({}), /missing settings/);
   assert.throws(() => loadConfig({ ...ENV, R360_PUBLIC_URL: 'http://x' }), /https/);
+  assert.throws(() => loadConfig({ ...ENV, R360_PUBLIC_URL: 'http://127.0.0.1:3660' }), /https/);
+  assert.throws(() => loadConfig({ ...ENV, R360_PUBLIC_URL: 'http://localhost.evil.example:3660' }), /https/);
+  assert.equal(loadConfig({ ...ENV, R360_PUBLIC_URL: 'http://localhost:3660' }).redirectUri, 'http://localhost:3660/auth/callback');
   assert.throws(() => loadConfig({ ...ENV, R360_KEY_VAULT_URI: 'https://evil.example.com' }), /vault/);
   const c = loadConfig(ENV);
   assert.equal(c.redirectUri, 'https://app-r360.example.westus3.azurecontainerapps.io/auth/callback');
@@ -120,4 +123,25 @@ test('drift: real content changes are still caught under a signature, and only a
   assert.notEqual(scriptHash(mid), scriptHash('a\nb\n'));
   assert.equal(normalizeScript(`${SIG}\r\n`), '');
   assert.equal(normalizeScript(null), null);
+});
+
+test('widenProfileAssignments: additive, keeps every existing target, reports exclusions, All devices covers everything', () => {
+  const G = '#microsoft.graph.groupAssignmentTarget', X = '#microsoft.graph.exclusionGroupAssignmentTarget', ALL = '#microsoft.graph.allDevicesAssignmentTarget';
+  const can = 'aaaaaaaa-0000-4000-8000-000000000001', prod = 'bbbbbbbb-0000-4000-8000-000000000002', pilot = 'cccccccc-0000-4000-8000-000000000003';
+  const have = [{ id: '1', target: { '@odata.type': G, groupId: can } }, { id: '2', target: { '@odata.type': X, groupId: pilot } }];
+  const one = widenProfileAssignments(have, { kind: 'group', groupId: prod.toUpperCase() });
+  assert.deepEqual(one.added, [prod]); assert.equal(one.covered, false); assert.deepEqual(one.blocked, []);
+  assert.deepEqual(one.next.map(a => a.target), [have[0].target, have[1].target, { '@odata.type': G, groupId: prod }], 'existing include and exclude kept, new group appended');
+  assert.equal(widenProfileAssignments(have, { kind: 'group', groupId: can }).next, null, 'already covered: nothing to write');
+  assert.equal(widenProfileAssignments(have, { kind: 'group', groupId: can }).covered, true);
+  const many = widenProfileAssignments(have, { kind: 'groups', groupIds: [can, prod] });
+  assert.deepEqual(many.added, [prod]);
+  const ex = widenProfileAssignments(have, { kind: 'groups', groupIds: [prod, pilot] });
+  assert.deepEqual(ex.blocked, [pilot], 'an excluded target group is reported, never overridden');
+  const all = widenProfileAssignments(have, { kind: 'allDevices' });
+  assert.deepEqual(all.added, ['allDevices']); assert.deepEqual(all.next.at(-1).target, { '@odata.type': ALL });
+  const hasAll = [{ target: { '@odata.type': ALL } }];
+  assert.equal(widenProfileAssignments(hasAll, { kind: 'group', groupId: prod }).next, null);
+  assert.equal(widenProfileAssignments(hasAll, { kind: 'allDevices' }).covered, true);
+  assert.throws(() => widenProfileAssignments(have, { kind: 'nope' }), /unknown target/);
 });

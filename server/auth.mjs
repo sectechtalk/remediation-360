@@ -1,16 +1,23 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { ConfidentialClientApplication, CryptoProvider } from '@azure/msal-node';
 import { FIC_AUDIENCE } from './identity.mjs';
+import { DEFENDER_SCOPES } from './defender.mjs';
 
 // Entra-only sign-in to r360-web: auth code + PKCE, server-side confidential client whose client assertion is a
 // managed-identity token (federated identity credential). No secret, certificate or key. Tokens stay in server memory.
 export const GRAPH_READ_SCOPES = ['User.Read', 'DeviceManagementConfiguration.Read.All', 'DeviceManagementManagedDevices.Read.All',
   'DeviceManagementScripts.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All'].map(s => `https://graph.microsoft.com/${s}`);
+// Change requests read the shared change mailbox with the operator's own delegated token. Requested only when the
+// mailbox is configured, so r360 without change requests never asks for mail access.
+export const MAIL_SCOPE = 'https://graph.microsoft.com/Mail.Read.Shared';
+export const readScopesFor = config => (config.changeMailbox ? [...GRAPH_READ_SCOPES, MAIL_SCOPE] : GRAPH_READ_SCOPES);
 export const SESSION_COOKIE = '__Host-r360';
 export const SESSION_TTL = 8 * 60 * 60 * 1000;
 export const PENDING_TTL = 10 * 60 * 1000;
 // The write app (r360-write) is requested ONLY for Intune script writes. It never carries the read scopes.
-export const WRITE_SCOPES = ['https://graph.microsoft.com/DeviceManagementScripts.ReadWrite.All'];
+// DeviceManagementConfiguration.ReadWrite.All is used for one thing only: adding a publish target to the two code-signing
+// certificate profiles (additive, checked by name and thumbprint), so signed scripts can run wherever they are assigned.
+export const WRITE_SCOPES = ['https://graph.microsoft.com/DeviceManagementScripts.ReadWrite.All', 'https://graph.microsoft.com/DeviceManagementConfiguration.ReadWrite.All'];
 
 export function parseCookies(header) {
   const out = {};
@@ -79,6 +86,7 @@ export function createAuth({ config, miToken, msal = {} }) {
   // Separate client app, separate token cache: the write token can never be mixed up with the read token.
   const writeCca = config.writeClientId ? makeCca(config.writeClientId) : null;
   const crypto = new CryptoProvider();
+  const readScopes = readScopesFor(config);
   const removeAccount = async (client, homeAccountId) => {
     const account = homeAccountId && client && await client.getTokenCache().getAccountByHomeId(homeAccountId);
     if (account) await client.getTokenCache().removeAccount(account);
@@ -105,10 +113,10 @@ export function createAuth({ config, miToken, msal = {} }) {
   return {
     writeConfigured: Boolean(writeCca),
     async beginSignIn(session) {
-      return begin(cca, session, 'pending', { scopes: GRAPH_READ_SCOPES, redirectUri: config.redirectUri, extra: { prompt: 'select_account' } });
+      return begin(cca, session, 'pending', { scopes: readScopes, redirectUri: config.redirectUri, extra: { prompt: 'select_account' } });
     },
     async completeSignIn(session, query) {
-      const result = await redeem(cca, session, 'pending', query, { scopes: GRAPH_READ_SCOPES, redirectUri: config.redirectUri });
+      const result = await redeem(cca, session, 'pending', query, { scopes: readScopes, redirectUri: config.redirectUri });
       session.user = userFromClaims(result.idTokenClaims, { tenantId: config.tenantId, clientId: config.webClientId });
       session.homeAccountId = result.account.homeAccountId;
       return session.user;
@@ -116,7 +124,7 @@ export function createAuth({ config, miToken, msal = {} }) {
     async graphToken(session) {
       const account = await cca.getTokenCache().getAccountByHomeId(session.homeAccountId);
       if (!account) throw Object.assign(new Error('Session expired. Sign in again.'), { status: 401 });
-      try { return (await cca.acquireTokenSilent({ account, scopes: GRAPH_READ_SCOPES })).accessToken; }
+      try { return (await cca.acquireTokenSilent({ account, scopes: readScopes })).accessToken; }
       catch { throw Object.assign(new Error('Session expired. Sign in again.'), { status: 401 }); }
     },
     // ---- write elevation (r360-write) ----
@@ -136,6 +144,18 @@ export function createAuth({ config, miToken, msal = {} }) {
       if (!account) throw Object.assign(new Error('The write session is gone. Elevate again.'), { status: 403 });
       try { return (await writeCca.acquireTokenSilent({ account, scopes: WRITE_SCOPES })).accessToken; }
       catch { throw Object.assign(new Error('The write session is gone. Elevate again.'), { status: 403 }); }
+    },
+    // Emergency path: the same write sign-in, silently exchanged for a Defender token (a refresh token works across
+    // resources for one client). r360-write has the WindowsDefenderATP delegated scopes with admin consent, so no new
+    // prompt appears. Fails closed when the write session is gone or consent is missing.
+    async defenderToken(homeAccountId) {
+      const account = writeCca && await writeCca.getTokenCache().getAccountByHomeId(homeAccountId);
+      if (!account) throw Object.assign(new Error('The write session is gone. Elevate again.'), { status: 403 });
+      try { return (await writeCca.acquireTokenSilent({ account, scopes: DEFENDER_SCOPES })).accessToken; }
+      catch (e) {
+        const consent = /AADSTS65001|consent/i.test(String(e.errorMessage || e.message));
+        throw Object.assign(new Error(consent ? 'r360-write has no admin consent for Microsoft Defender for Endpoint. Run tools\\New-R360AppRegistration.ps1 on DEVICE02, then elevate again.' : 'Microsoft Entra did not issue a Defender token for your write session. End the write session and elevate again.'), { status: 403 });
+      }
     },
     async endWrite(homeAccountId) { await removeAccount(writeCca, homeAccountId); },
     async signOut(session) {

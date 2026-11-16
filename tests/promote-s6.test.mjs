@@ -397,3 +397,51 @@ test('the list shows the soak clock on the canary change and offers Promote only
 });
 
 
+
+// ---- the code-signing profiles follow the promotion ----
+test('a promotion adds its target to both code-signing profiles before the remediation is assigned there, and audits it', async () => {
+  const w = world({ soakDays: 8 });
+  await promoted(w);
+  const r = await publish(w);
+  assert.equal(r.ok, true);
+  for (const id of ['cfg-1', 'cfg-2']) assert.deepEqual(w.g.signing.targets(id), [CAN, PROD], 'canary kept, production added');
+  assert.deepEqual(r.signingProfiles.map(p => p.added), [[PROD], [PROD]]);
+  const firstProfileWrite = w.g.calls.findIndex(c => c.method === 'POST' && c.path.endsWith('/assign') && c.path.includes('deviceConfigurations'));
+  const scriptAssign = w.g.calls.findIndex(c => c.method === 'POST' && c.path.endsWith('/assign') && c.path.includes('deviceHealthScripts'));
+  assert.ok(firstProfileWrite >= 0 && firstProfileWrite < scriptAssign, 'certificate first, then the script');
+  assert.ok(w.g.calls.filter(c => c.path.includes('deviceConfigurations') && c.method === 'POST').every(c => c.auth === 'Bearer WT'));
+  const row = ofAction(w, 'publish.production').find(x => x.result === 'ok');
+  assert.deepEqual(row.detail.signingProfiles.map(p => p.added), [[PROD], [PROD]]);
+  w.g.calls.length = 0;
+  const again = await publish(w);
+  assert.equal(again.already, true); noGraphWrites(w);
+  assert.deepEqual(again.signingProfiles.map(p => p.added), [[], []], 'a re-publish finds the profiles covered and writes nothing');
+});
+
+test('a re-publish repairs a promotion whose target lost the code-signing profiles', async () => {
+  const w = world({ soakDays: 8 });
+  await promoted(w); await publish(w);
+  w.g.signing.assigns.set('cfg-2', [{ id: 'a0', target: { '@odata.type': '#microsoft.graph.groupAssignmentTarget', groupId: CAN } }]);
+  const r = await publish(w);
+  assert.equal(r.already, true);
+  assert.deepEqual(w.g.signing.targets('cfg-2'), [CAN, PROD]);
+  assert.deepEqual(r.signingProfiles.map(p => p.added), [[], [PROD]]);
+});
+
+test('signing profile problems stop the publish before the remediation is touched', async () => {
+  const exclude = world({ soakDays: 8 }); await promoted(exclude);
+  exclude.g.signing.assigns.get('cfg-1').push({ id: 'x', target: { '@odata.type': '#microsoft.graph.exclusionGroupAssignmentTarget', groupId: PROD } });
+  await fails(publish(exclude), 409, /excludes/);
+  assert.equal(exclude.g.assigns.get('intune-canary')[0].target.groupId, CAN, 'the remediation stays on the canary');
+  assert.equal(ofAction(exclude, 'publish.production').at(-1).reason, 'signing-profile-excludes-target');
+
+  const missing = world({ soakDays: 8 }); await promoted(missing);
+  missing.g.signing.profiles.delete('cfg-2');
+  await fails(publish(missing), 409, /does not exist in Intune/);
+  assert.equal(missing.g.calls.some(c => c.method !== 'GET' && c.path.includes('deviceHealthScripts')), false);
+
+  const wrong = world({ soakDays: 8 }); await promoted(wrong);
+  wrong.g.signing.profiles.get('cfg-1').omaSettings[0].omaUri = './Device/Vendor/MSFT/RootCATrustedCertificates/TrustedPublisher/0000000000000000000000000000000000000000/EncodedCertificate';
+  await fails(publish(wrong), 409, /does not carry the r360 code-signing certificate/);
+  assert.equal(wrong.g.signing.posts.length, 0, 'nothing was assigned');
+});

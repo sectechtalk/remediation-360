@@ -6,7 +6,7 @@ import { createChanges, ChangeError, machineBlock, stageOf } from '../server/cha
 import { createIntune, buildDesired, descriptionStamp, intuneDiff, scheduleOf, sha256Hex, HS } from '../server/intune.mjs';
 import { SIG_BEGIN } from '../server/signing.mjs';
 import { loadConfig } from '../server/config.mjs';
-import { ENV } from './fixtures.mjs';
+import { ENV, signingProfiles } from './fixtures.mjs';
 
 const AARON = { oid: '94540000-0000-4000-8000-0000000000c3', upn: 'admin@contoso.com', name: 'Aaron Brooks' };
 const USER1 = { oid: '0d000000-0000-4000-8000-0000000000c4', upn: 'user1@contoso.com', name: 'User One' };
@@ -33,6 +33,7 @@ function graph() {
     g.calls.push({ method, path: u.pathname, search: u.search, origin: u.origin, auth: init.headers?.Authorization, body });
     g.order?.push(`graph:${method}`);
     const hooked = g.fail?.(method, u.pathname, g.calls.length); if (hooked) return hooked;
+    const sp = g.signing?.handle(method, u.pathname, body, json, rid); if (sp) return sp;
     const m = /^\/beta\/deviceManagement\/deviceHealthScripts(?:\/([^/]+)(\/assignments|\/assign)?)?$/.exec(u.pathname);
     if (!m) return json(404, { error: { code: 'NotFound', message: 'no route' } }, rid);
     const [, id, sub] = m;
@@ -62,7 +63,7 @@ function graph() {
 function world({ mode = 'testing', cfg } = {}) {
   const config = cfg || loadConfig({ ...ENV, R360_CANARY_GROUP_ID: CANARY, R360_FOUR_EYES: mode });
   const w = { t: T0, seq: 0, mode, rows: [], order: [], comments: [], intentDown: false, auditListDown: false, failResultFor: null, files: {}, artifact: null, mainSha: COMMIT, run: null, extraPulls: [], tokenError: null };
-  w.g = graph(); w.g.order = w.order;
+  w.g = graph(); w.g.order = w.order; w.g.signing = signingProfiles({ canary: CANARY });
   w.pr = { number: 7, state: 'open', merged: false, draft: false, title: `r360: add remediation ${FOLDER}`, url: 'https://github.com/your-org/remediations/pull/7', branch: `r360/${FOLDER}/202610271504-94540000`, headSha: HEAD, headRepo: 'your-org/remediations', base: 'main',
     body: `Proposed through r360 by admin@contoso.com on x\n${machineBlock({ folder: FOLDER, authorOid: AARON.oid })}`, createdAt: 'c', updatedAt: 'u', mergedAt: null, mergeSha: null, checks: GREEN };
   w.audit = {

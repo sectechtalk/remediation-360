@@ -123,6 +123,16 @@ test('HTTP: unauthenticated users go to Entra sign-in, APIs return 401, read-onl
     r = await fetch(`${base}/api/remediations`, { method: 'POST', headers: { ...h, origin: config.publicUrl, 'x-r360-csrf': csrf, 'content-type': 'application/json' }, body: '{}' }); assert.equal(r.status, 404);
     r = await fetch(`${base}/`, { headers: h }); assert.equal(r.status, 200); assert.match(await r.text(), /Remediations/);
     r = await fetch(`${base}/api/settings`, { headers: h }); assert.ok(!/secret/i.test(await r.text()));
+    // The write link opened while signed out: sign in first, then continue to the write sign-in (fixed target only).
+    r = await fetch(`${base}/auth/signin?next=write`, { redirect: 'manual' });
+    const sid2 = /__Host-r360=([^;]+)/.exec(r.headers.get('set-cookie'))[1];
+    sessions.get(sid2).pending = { state: 's2', created: Date.now() };
+    r = await fetch(`${base}/auth/callback?state=s2&code=0123456789`, { redirect: 'manual', headers: { cookie: `__Host-r360=${sid2}` } });
+    assert.equal(r.status, 302); assert.equal(r.headers.get('location'), '/auth/write/start');
+    r = await fetch(`${base}/auth/signin?next=https://evil.example`, { redirect: 'manual', headers: { cookie: `__Host-r360=${sid2}` } });
+    sessions.get(sid2).pending = { state: 's3', created: Date.now() };
+    r = await fetch(`${base}/auth/callback?state=s3&code=0123456789`, { redirect: 'manual', headers: { cookie: `__Host-r360=${sid2}` } });
+    assert.equal(r.headers.get('location'), '/');
     r = await fetch(`${base}/auth/signout`, { method: 'POST', redirect: 'manual', headers: { ...h, origin: 'https://evil.example.com' } }); assert.equal(r.status, 403);
     r = await fetch(`${base}/auth/signout`, { method: 'POST', redirect: 'manual', headers: h }); assert.equal(r.status, 303);
     r = await fetch(`${base}/api/me`, { headers: h }); assert.equal(r.status, 401);

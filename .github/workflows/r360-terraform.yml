@@ -1,0 +1,179 @@
+name: r360 Terraform (reusable)
+
+# The runner half of the r360 Deployments lane. A target repository calls this workflow; r360 reads its runs.
+#   mode plan  : terraform plan on a pull request, posted as a comment with an r360:plan line (r360 needs it to merge)
+#   mode apply : terraform apply on the target branch, in the target's GitHub environment (protect it: main branch only)
+#   mode drift : terraform plan -detailed-exitcode; the step "Drift detected" fails when the real tenant differs
+# Sign-in is GitHub OIDC to an Entra app registration with a federated credential. No secret is stored for Entra.
+# See docs/deployments.md for the caller workflow, the identities and the GitHub settings.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: plan, apply or drift
+        type: string
+        required: true
+      working-directory:
+        description: Folder with the Terraform root module
+        type: string
+        required: true
+      tenant-id:
+        description: Entra tenant id of the target
+        type: string
+        required: true
+      client-id:
+        description: Deploy identity (app registration client id) used by apply
+        type: string
+        required: true
+      plan-client-id:
+        description: Optional read-only identity for plan and drift. Defaults to client-id.
+        type: string
+        default: ''
+      environment:
+        description: GitHub environment the apply job runs in
+        type: string
+        required: true
+      tfvars-json:
+        description: Optional JSON object written to r360.auto.tfvars.json
+        type: string
+        default: ''
+      tf-cloud-organization:
+        description: Optional HCP Terraform organization for remote state (free tier)
+        type: string
+        default: ''
+      tf-workspace:
+        description: HCP Terraform workspace (with tf-cloud-organization)
+        type: string
+        default: ''
+      terraform-version:
+        type: string
+        default: '1.9.8'
+    secrets:
+      TF_API_TOKEN:
+        description: HCP Terraform API token, only when tf-cloud-organization is set
+        required: false
+
+jobs:
+  plan:
+    if: inputs.mode == 'plan' || inputs.mode == 'drift'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_TENANT_ID: ${{ inputs.tenant-id }}
+      ARM_CLIENT_ID: ${{ inputs.plan-client-id != '' && inputs.plan-client-id || inputs.client-id }}
+      TF_IN_AUTOMATION: 'true'
+      TF_CLOUD_ORGANIZATION: ${{ inputs.tf-cloud-organization }}
+      TF_WORKSPACE: ${{ inputs.tf-workspace }}
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      TFVARS_JSON: ${{ inputs.tfvars-json }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: Configure state and variables
+        run: |
+          if [ -n "$TF_CLOUD_ORGANIZATION" ]; then printf 'terraform {\n  cloud {}\n}\n' > r360_backend_override.tf; fi
+          if [ -n "$TFVARS_JSON" ]; then printf '%s' "$TFVARS_JSON" | jq -e 'type == "object"' > /dev/null || { echo '::error::tfvars-json must be a JSON object'; exit 1; }; printf '%s' "$TFVARS_JSON" > r360.auto.tfvars.json; fi
+
+      - run: terraform init -input=false
+      - run: terraform validate -no-color
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode -lock=${{ inputs.mode == 'drift' && 'false' || 'true' }} -out=tfplan > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" = "1" ]; then echo '::error::terraform plan failed'; exit 1; fi
+          terraform show -json tfplan > plan.json
+          jq -c --argjson code "$code" '{add: ([.resource_changes[]? | select(.change.actions | index("create"))] | length),
+            change: ([.resource_changes[]? | select(.change.actions == ["update"])] | length),
+            destroy: ([.resource_changes[]? | select(.change.actions | index("delete"))] | length),
+            exitCode: $code}' plan.json > counts.json
+          echo "counts=$(cat counts.json)" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Terraform ${{ inputs.mode }}: $(jq -r '"\(.add) to add, \(.change) to change, \(.destroy) to destroy"' counts.json)"
+            echo '<details><summary>Plan output</summary>'; echo; echo '```'; head -c 60000 plan.txt; echo '```'; echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post the plan on the pull request
+        if: inputs.mode == 'plan' && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          line=$(jq -c --arg sha "$HEAD_SHA" '{v: 1, sha: $sha, add, change, destroy, noChanges: (.exitCode == 0), exitCode}' counts.json)
+          {
+            echo "<!-- r360:plan $line -->"
+            echo "**Terraform plan** for \`${HEAD_SHA:0:8}\`: $(jq -r '"\(.add) to add, \(.change) to change, \(.destroy) to destroy"' counts.json). [Run]($RUN_URL)"
+            echo
+            echo 'Merging this pull request applies the plan to the target tenant (a fresh plan is taken at apply time).'
+            echo
+            echo '<details><summary>Plan output</summary>'; echo; echo '```'; head -c 60000 plan.txt; echo '```'; echo '</details>'
+          } > comment.md
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- r360:plan "))) | .id' | tail -n 1)
+          if [ -n "$id" ]; then gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@comment.md > /dev/null
+          else gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@comment.md > /dev/null; fi
+
+      # r360 reads this step: failure here means drift; any other failure means the check itself failed.
+      - name: Drift detected
+        if: inputs.mode == 'drift' && steps.plan.outputs.exitcode == '2'
+        run: |
+          echo "### Drift detected" >> "$GITHUB_STEP_SUMMARY"
+          echo "The tenant differs from the Terraform code. Open a pull request to bring them back in line, or merge to re-apply." >> "$GITHUB_STEP_SUMMARY"
+          echo '::error::Drift detected: the tenant differs from the Terraform code'
+          exit 1
+
+  apply:
+    if: inputs.mode == 'apply'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_TENANT_ID: ${{ inputs.tenant-id }}
+      ARM_CLIENT_ID: ${{ inputs.client-id }}
+      TF_IN_AUTOMATION: 'true'
+      TF_CLOUD_ORGANIZATION: ${{ inputs.tf-cloud-organization }}
+      TF_WORKSPACE: ${{ inputs.tf-workspace }}
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_API_TOKEN }}
+      TFVARS_JSON: ${{ inputs.tfvars-json }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          terraform_wrapper: false
+
+      - name: Configure state and variables
+        run: |
+          if [ -n "$TF_CLOUD_ORGANIZATION" ]; then printf 'terraform {\n  cloud {}\n}\n' > r360_backend_override.tf; fi
+          if [ -n "$TFVARS_JSON" ]; then printf '%s' "$TFVARS_JSON" | jq -e 'type == "object"' > /dev/null || { echo '::error::tfvars-json must be a JSON object'; exit 1; }; printf '%s' "$TFVARS_JSON" > r360.auto.tfvars.json; fi
+
+      - run: terraform init -input=false
+      - name: Apply
+        run: |
+          terraform apply -input=false -no-color -auto-approve 2>&1 | tee apply.txt
+          { echo '### Terraform apply'; echo '```'; tail -c 20000 apply.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

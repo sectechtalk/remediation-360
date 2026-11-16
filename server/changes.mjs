@@ -5,6 +5,7 @@ import { verifySignedArtifact, unzipArtifact, SIG_BEGIN } from './signing.mjs';
 import { buildDesired, descriptionStamp, intuneDiff, GraphWriteError, sha256Hex } from './intune.mjs';
 import { evaluateSoak, soakClock, cleanReason, validReason, DEFAULT_SOAK_DAYS, MIN_REASON } from './soak.mjs';
 import { gitStamp } from './catalog.mjs';
+import { profileCertCheck, widenProfileAssignments } from './certs.mjs';
 import { ALL_DEVICES, assignmentFor, cleanName, groupsOf, groupsTarget, isCanaryOnly, isCanaryTarget, isGuid, parseTargetRequest, promotionDiff, sameTarget, targetFromKey, targetKey, targetOf, targetOfAssignments, targetText } from './target.mjs';
 
 // Authoring: r360 turns a form into a branch + pull request in the remediations repo, as the GitHub App, on behalf of a
@@ -500,6 +501,33 @@ const mapGithub = (e, what) => { const refused = e.status === 409 || e.status ==
   // Order: every gate, then the audit intent row, then Intune. Content comes from the verified artifact bytes only, never from
   // the form, the pull request or the repo. A second publish of the same commit finds Intune already identical and does nothing.
   class PublishStop extends Error { constructor(code, message) { super(message); this.code = code; } }
+  // Every publish makes sure both code-signing profiles reach its target before the remediation is assigned there, so a
+  // promotion never lands on devices without the certificate (enforceSignatureCheck would fail them). Additive only; the
+  // profiles are found by name, must carry the configured thumbprint, and a target the profile excludes stops the publish.
+  async function ensureSigningProfiles(g, token, target) {
+    const out = [];
+    for (const name of [config.rootProfile, config.publisherProfile]) {
+      const hits = await g.findConfigsByName(token, name);
+      if (hits.length !== 1) {
+        throw new PublishStop(hits.length ? 'signing-profile-duplicate' : 'signing-profile-missing', hits.length
+          ? `${hits.length} Intune profiles are named "${name}". Resolve the duplicates in Intune first; r360 will not guess.`
+          : `The code-signing profile "${name}" does not exist in Intune, so signed scripts could not run on the target. Run tools/New-R360CodeSigningCert.ps1 first.`);
+      }
+      const id = hits[0].id;
+      const { profile, assignments } = await g.readConfig(token, id);
+      const chk = profileCertCheck(profile, config.codesignThumbprint);
+      if (!chk.matches) throw new PublishStop('signing-profile-wrong-cert', `"${name}" does not carry the r360 code-signing certificate ${config.codesignThumbprint} (${chk.detail}). Fix the profile before publishing.`);
+      const w = widenProfileAssignments(assignments, target);
+      if (w.blocked.length) throw new PublishStop('signing-profile-excludes-target', `"${name}" excludes ${w.blocked.join(', ')}, so devices there would never get the signing certificate. Remove that exclusion in Intune first.`);
+      if (w.next) {
+        await g.assignConfig(token, id, w.next);
+        const after = await g.readConfig(token, id);
+        if (!widenProfileAssignments(after.assignments, target).covered) throw new PublishStop('signing-profile-post-check', `"${name}" was assigned to the target, but Intune does not show it afterwards. Check the profile in Intune before trying again.`);
+      }
+      out.push({ name, id, added: w.added });
+    }
+    return out;
+  }
   const chainOf = (L, pr, m) => {
     const p = L.proposed;
     const proposedOk = Boolean(p && samePerson(p.actorOid, m.authorOid) && p.target === `remediations/${m.folder}`);
@@ -510,7 +538,7 @@ const mapGithub = (e, what) => { const refused = e.status === 409 || e.status ==
   const requestIdOf = e => (e.graphRequestId ? ` (Graph request ${e.graphRequestId})` : '');
   const mapGraphWrite = e => {
     if (e instanceof GraphWriteError) {
-      if (e.status === 401 || e.status === 403) return new ChangeError(403, `Microsoft Graph refused the write (HTTP ${e.status}). Check that your Intune Administrator role is active in PIM and that r360-write has admin consent for DeviceManagementScripts.ReadWrite.All${requestIdOf(e)}.`);
+      if (e.status === 401 || e.status === 403) return new ChangeError(403, `Microsoft Graph refused the write (HTTP ${e.status}). Check that your Intune Administrator role is active in PIM and that r360-write has admin consent for DeviceManagementScripts.ReadWrite.All and DeviceManagementConfiguration.ReadWrite.All (sign out of the write session and elevate again after an upgrade)${requestIdOf(e)}.`);
       return new ChangeError(502, `${e.message}${requestIdOf(e)}`);
     }
     return new ChangeError(502, 'Intune could not be reached. Nothing further was changed; try again.');
@@ -626,12 +654,14 @@ const mapGithub = (e, what) => { const refused = e.status === 409 || e.status ==
       ...(promo ? { promote: true, targetName, canarySha: promo.canarySha, soakDays: evidenceDays, soakRequired: config.canarySoakDays, soakOverride: Boolean(soakOverride) } : {}) };
     await intent(user, { ...base, detail: info });
     const g = intune.scope();
-    let intuneId = null, created = false;
+    let intuneId = null, created = false, signing = null;
     const finish = async (extra) => {
       const ids = g.requestIds().slice(-12);
-      return result(user, { ...base, result: 'ok', graphRequestId: ids.at(-1), detail: { ...info, intuneId, created, ...extra, graphRequestIds: ids } });
+      return result(user, { ...base, result: 'ok', graphRequestId: ids.at(-1), detail: { ...info, intuneId, created, signingProfiles: signing, ...extra, graphRequestIds: ids } });
     };
     try {
+      // First the certificate, then the scripts: if the profiles cannot reach the target, nothing is assigned there.
+      signing = await ensureSigningProfiles(g, token, publishTarget);
       const found = await g.findByName(token, meta.displayName);
       if (found.length > 1) throw new PublishStop('duplicate-name', `${found.length} remediations named "${meta.displayName}" exist in Intune. Resolve the duplicates there first; r360 will not guess.`);
       if (found.length) {
@@ -640,7 +670,7 @@ const mapGithub = (e, what) => { const refused = e.status === 409 || e.status ==
         if (!intuneDiff({ existing: cur.script, assignments: cur.assignments, desired, mergeSha: pr.mergeSha, groupLabel }).length) {
           const warning = await finish({ noop: true });
           bust();
-          return { ok: true, already: true, number, mergeSha: pr.mergeSha, intuneId, selfApproved, requestId, ...(warning ? { warning } : {}) };
+          return { ok: true, already: true, number, mergeSha: pr.mergeSha, intuneId, selfApproved, requestId, signingProfiles: signing, ...(warning ? { warning } : {}) };
         }
         await g.update(token, intuneId, desired.script);
       } else {
@@ -655,13 +685,13 @@ const mapGithub = (e, what) => { const refused = e.status === 409 || e.status ==
     } catch (e) {
       log.error?.(`${publishAction} failed: ${e.message}`);
       const stop = e instanceof PublishStop;
-      await result(user, { ...base, result: 'failed', reason: stop ? e.code : String(e.message).slice(0, 300), graphRequestId: e.graphRequestId || g.requestIds().at(-1), detail: { ...info, intuneId, created, ...(stop ? { message: e.message } : {}), graphRequestIds: g.requestIds().slice(-12) } });
+      await result(user, { ...base, result: 'failed', reason: stop ? e.code : String(e.message).slice(0, 300), graphRequestId: e.graphRequestId || g.requestIds().at(-1), detail: { ...info, intuneId, created, signingProfiles: signing, ...(stop ? { message: e.message } : {}), graphRequestIds: g.requestIds().slice(-12) } });
       bust();
       throw stop ? new ChangeError(409, e.message) : mapGraphWrite(e);
     }
     bust();
     const warning = await finish({ noop: false });
-    return { ok: true, number, mergeSha: pr.mergeSha, intuneId, created, selfApproved, requestId, ...(warning ? { warning } : {}) };
+    return { ok: true, number, mergeSha: pr.mergeSha, intuneId, created, selfApproved, requestId, signingProfiles: signing, ...(warning ? { warning } : {}) };
   }
   // ---- S6: promote a change from the canary group to production ----
   // Evidence is read as the signed-in user (their delegated read token) and is judged by evaluateSoak. The canary publish row in the
