@@ -1,4 +1,5 @@
 import { renderTable } from './table.js';
+import { busy } from './busy.js';
 
 // Deployments lane UI. The server decides and enforces everything; this shows targets, open changes with their plan, and
 // runs, and offers Merge and apply, Run plan and Check drift. Links go only to github.com. No inline script or style (CSP).
@@ -21,15 +22,14 @@ export function createDeploymentsUi({ el, pill, api, view, fmtTime, session }) {
   const roles = () => session.me?.roles || [];
   const writeBlock = allowed => !session.me?.write?.active ? 'Start a write session first (Elevate to write).' : !roles().some(r => allowed.includes(r)) ? 'Your role does not allow this.' : null;
 
-  function actionButton(text, allowed, extraBlock, onClick, msg) {
+  function actionButton(text, busyText, allowed, extraBlock, onClick, msg) {
     const block = writeBlock(allowed) || extraBlock || null;
-    const b = el('button', { className: 'btn', textContent: text, disabled: !!block, title: block || '' });
-    b.onclick = async () => {
-      b.disabled = true; msg.textContent = '';
+    const b = el('button', { className: 'btn', type: 'button', textContent: text, disabled: !!block, title: block || '' });
+    b.onclick = () => busy(b, busyText, async () => {
+      msg.replaceChildren(el('span', { className: 'muted', textContent: busyText }));
       try { msg.replaceChildren(await onClick()); }
       catch (e) { msg.replaceChildren(el('span', { className: 'error', textContent: e.message })); }
-      finally { b.disabled = false; }
-    };
+    });
     return b;
   }
 
@@ -37,7 +37,7 @@ export function createDeploymentsUi({ el, pill, api, view, fmtTime, session }) {
     const msg = el('span', { role: 'status' });
     const head = el('h2', { textContent: `${t.name} ` }, link(t.repoUrl, t.repo));
     if (t.error) return el('div', { className: 'card deploy' }, head, el('p', { className: 'error', textContent: t.error }));
-    const dispatch = mode => actionButton(mode === 'plan' ? 'Run plan' : 'Check drift now', ['author', 'approver', 'admin'], null, async () => {
+    const dispatch = mode => actionButton(mode === 'plan' ? 'Run plan' : 'Check drift now', mode === 'plan' ? 'Starting the plan…' : 'Starting the drift check…', ['author', 'approver', 'admin'], null, async () => {
       const r = await api(`/api/deployments/${encodeURIComponent(t.id)}/dispatch`, false, { method: 'POST', body: { mode } });
       setTimeout(reload, 4000);
       return el('span', {}, `${mode === 'plan' ? 'Plan' : 'Drift check'} started. `, link(r.runsUrl, 'Watch it in GitHub'), r.warning ? el('span', { className: 'error', textContent: ` ${r.warning}` }) : null);
@@ -50,7 +50,7 @@ export function createDeploymentsUi({ el, pill, api, view, fmtTime, session }) {
 
     const changes = el('div');
     renderTable(changes, { rows: t.changes, columns: [
-      { key: 'merge', label: '', width: 130, render: c => actionButton('Merge and apply', ['approver', 'admin'], c.blockedReason, async () => {
+      { key: 'merge', label: '', width: 130, render: c => actionButton('Merge and apply', 'Merging…', ['approver', 'admin'], c.blockedReason, async () => {
         const r = await api(`/api/deployments/${encodeURIComponent(t.id)}/pulls/${c.number}/merge`, false, { method: 'POST', body: { headSha: c.headSha } });
         setTimeout(reload, 4000);
         return el('span', {}, `#${c.number} merged (${r.mergeSha.slice(0, 8)}). The apply runs next. `, link(r.applyUrl, 'Watch the apply'), r.warning ? el('span', { className: 'error', textContent: ` ${r.warning}` }) : null);
@@ -86,11 +86,11 @@ export function createDeploymentsUi({ el, pill, api, view, fmtTime, session }) {
   function deployments() {
     stop();
     const body = el('div');
-    const btn = el('button', { className: 'btn', textContent: 'Refresh' });
+    const btn = el('button', { className: 'btn', type: 'button', textContent: 'Refresh' });
     const stamp = el('span', { className: 'muted' });
-    const load = async (quiet = false) => {
-      btn.disabled = true;
-      if (!quiet) body.replaceChildren(el('p', { className: 'muted', textContent: 'Loading...' }));
+    // A quiet reload (after an action, or the 15 s poll) runs even while Refresh is busy; Refresh shows it is reading.
+    const load = (quiet = false) => busy(btn, quiet ? 'Refreshing…' : 'Loading…', async () => {
+      if (!quiet) body.replaceChildren(el('p', { className: 'muted', textContent: 'Reading the deployment targets and their runs from GitHub…' }));
       try {
         const d = await api('/api/deployments');
         stamp.textContent = `Loaded ${fmtTime(d.fetchedAt)}`;
@@ -100,8 +100,7 @@ export function createDeploymentsUi({ el, pill, api, view, fmtTime, session }) {
         stop();
         if (busy) poll = setInterval(() => load(true), POLL_MS);
       } catch (e) { body.replaceChildren(el('p', { className: 'error', textContent: e.message })); }
-      finally { btn.disabled = false; }
-    };
+    }, { always: quiet });
     btn.onclick = () => load(false);
     view().replaceChildren(el('h1', { textContent: 'Deployments' }),
       el('p', { className: 'muted', textContent: 'Terraform changes run by GitHub Actions. A change is a pull request with its plan posted on it; merging starts the apply behind the target\'s GitHub environment; a scheduled plan flags drift. Every finished run is recorded in Audit. Four-eyes is off for this lane.' }),

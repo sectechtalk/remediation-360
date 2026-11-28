@@ -209,7 +209,7 @@ if ((& $want 'CodeSigning') -and $azOk) {
         if (Test-Path $credPath) {
             try {
                 $devCred = Import-Clixml $credPath
-                $target = if ($devCred.PSObject.Properties['Address']) { $devCred.Address } else { '192.168.50.123' }
+                $target = if ($devCred.PSObject.Properties['Address']) { $devCred.Address } else { '192.0.2.10' }
                 $c = if ($devCred -is [pscredential]) { $devCred } else { $devCred.Credential }
                 $thumb = ($cert.x509ThumbprintHex)
                 $devStores = Invoke-Command -ComputerName $target -Credential $c -ErrorAction Stop -ScriptBlock {

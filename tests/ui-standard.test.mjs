@@ -65,11 +65,11 @@ test('rail: app switcher under the brand, theme toggle, account controls, and a 
 test('rail: collapsible section headers and a unique shared icon for every page (360 rail standard)', () => {
   const pages = [...rail.matchAll(/data-view="([a-z]+)"><span data-nav-icon="([a-z0-9-]+)"><\/span>/g)];
   assert.equal(pages.length, [...rail.matchAll(/class="nav-item/g)].length, 'every page link has an icon');
-  assert.equal(pages.length, 16);
+  assert.equal(pages.length, 17);
   const icons = pages.map(m => m[2]);
   assert.deepEqual(icons.filter((n, i) => icons.indexOf(n) !== i), []);
   for (const n of icons) assert.ok(ICONS_360[n], n);
-  assert.equal([...rail.matchAll(/<button type="button" class="nav-label" aria-expanded="true" data-section="[a-z-]+"><span>[^<]+<\/span><span class="nav-chevron" aria-hidden="true"><\/span><\/button>/g)].length, 4);
+  assert.equal([...rail.matchAll(/<button type="button" class="nav-label" aria-expanded="false" data-section="[a-z-]+"><span>[^<]+<\/span><span class="nav-chevron" aria-hidden="true"><\/span><\/button>/g)].length, 4);
   assert.doesNotMatch(css, /\.nav-(label|item) \{[^}]*font-size/, 'header and link sizes come from 360-base.css');
 });
 

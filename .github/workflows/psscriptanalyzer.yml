@@ -35,3 +35,13 @@ jobs:
           $bad = @($r | Where-Object { $_.Severity -in 'Error', 'Warning', 'ParseError' })
           if ($bad.Count) { throw "$($bad.Count) PSScriptAnalyzer finding(s) at Error/Warning" }
           'No Error/Warning findings.'
+
+      - name: Invoke-ScriptAnalyzer on the built Chaos Monkey tests (remediations repo rules, 5.1 and 7.4)
+        shell: pwsh
+        run: |
+          $r = Invoke-ScriptAnalyzer -Path ./chaos/dist -Recurse -Settings ./chaos/PSScriptAnalyzerSettings.psd1
+          $r | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize -Wrap | Out-String -Width 300
+          foreach ($i in $r) { Write-Host "::$(if ($i.Severity -eq 'Error') {'error'} else {'warning'}) file=$($i.ScriptPath),line=$($i.Line)::$($i.RuleName): $($i.Message)" }
+          $bad = @($r | Where-Object { $_.Severity -in 'Error', 'Warning', 'ParseError' })
+          if ($bad.Count) { throw "$($bad.Count) PSScriptAnalyzer finding(s) at Error/Warning in chaos/dist" }
+          "No Error/Warning findings in $(@(Get-ChildItem ./chaos/dist -Filter *.ps1).Count) Chaos Monkey scripts."

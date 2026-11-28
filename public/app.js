@@ -5,6 +5,10 @@ import { createRequestsUi } from './requests.js';
 import { createServiceNowUi } from './servicenow.js';
 import { createGuideUi } from './guide.js';
 import { createEmergencyUi } from './emergency.js';
+import { createOffboardUi, RETURN_KEY } from './offboard.js';
+import { markChaosAuto } from './chaos.js';
+import { busy, leaving, installPressFeedback } from './busy.js';
+import { installPageSections } from './page-sections.js';
 
 // Each dataset has exactly one home page (no duplicated data).
 const STUBS = { rollouts: ['Rollouts', 3, 'Canary run on DEVICE01, widen, retire, certificate profile management.'] };
@@ -30,15 +34,13 @@ async function api(path, refresh, { keepOn401 = false, ...init } = {}) {
 }
 function page(title, subtitle, loader) {
   const body = el('div');
-  const btn = el('button', { className: 'btn', textContent: 'Refresh' });
+  const btn = el('button', { className: 'btn', type: 'button', textContent: 'Refresh' });
   const stamp = el('span', { className: 'muted' });
-  const run = async refresh => {
-    btn.disabled = true; btn.title = 'Loading';
-    body.replaceChildren(el('p', { className: 'muted', textContent: 'Loading...' }));
+  const run = refresh => busy(btn, refresh ? 'Refreshing…' : 'Loading…', async () => {
+    body.replaceChildren(el('p', { className: 'muted', textContent: `Reading ${title}…` }));
     try { const d = await loader(refresh, body); stamp.textContent = d?.fetchedAt ? `Loaded ${fmtTime(d.fetchedAt)}` : ''; }
     catch (e) { body.replaceChildren(el('p', { className: 'error', textContent: e.message })); }
-    finally { btn.disabled = false; btn.title = ''; }
-  };
+  });
   btn.onclick = () => run(true);
   view().replaceChildren(el('h1', { textContent: title }), el('p', { className: 'muted', textContent: subtitle }), el('div', { className: 'toolbar' }, btn, stamp), body);
   run(false);
@@ -52,17 +54,19 @@ const requestsUi = createRequestsUi({ el, pill, api, view, fmtTime, session });
 const servicenowUi = createServiceNowUi({ el, api, view, fmtTime });
 const guideUi = createGuideUi({ el, pill, view });
 const emergencyUi = createEmergencyUi({ el, pill, api, view, fmtTime, session });
+const offboardUi = createOffboardUi({ el, pill, api, view, fmtTime, session });
 const VIEWS = {
   overview: () => guideUi.overview(),
   paths: () => guideUi.paths(),
   support: () => guideUi.support(),
   licenses: () => guideUi.licenses(),
-  emergency: () => emergencyUi.page(),
+  emergency: arg => emergencyUi.page(arg),
+  offboard: () => offboardUi.page(),
   deployments: () => deploymentsUi.deployments(),
   requests: () => requestsUi.requests(),
   servicenow: () => servicenowUi.page(),
   changes: () => changesUi.changes(),
-  new: () => changesUi.new(),
+  new: arg => changesUi.new(arg),
   edit: key => changesUi.edit(key),
   update: key => changesUi.update(key),
   remediations: () => page('Remediations', 'Catalog from your-org/remediations main and Intune Remediations, with drift between them and run summary counts.', async (refresh, body) => {
@@ -149,8 +153,8 @@ VIEWS.audit = () => {
   range.value = '7d';
   const actor = el('input', { type: 'text', placeholder: 'Actor (exact UPN)', size: 26 });
   const target = el('input', { type: 'text', placeholder: 'Target contains', size: 22 });
-  const go = el('button', { className: 'btn', textContent: 'Apply' });
-  const dl = (fmt, label) => el('a', { className: 'btn', textContent: label, target: '_blank', rel: 'noopener' }, null);
+  const go = el('button', { className: 'btn', type: 'button', textContent: 'Apply' });
+  const dl = (fmt, label) => { const a = el('a', { className: 'btn', textContent: label, target: '_blank', rel: 'noopener' }); a.dataset.done = 'Download started'; return a; };
   const dlJson = dl('json', 'Download JSON'), dlCsv = dl('csv', 'Download CSV');
   const out = el('div');
   const params = () => {
@@ -159,8 +163,8 @@ VIEWS.audit = () => {
     if (target.value.trim()) p.set('target', target.value.trim());
     return p;
   };
-  const load = async () => {
-    go.disabled = true; out.replaceChildren(el('p', { className: 'muted', textContent: 'Loading...' }));
+  const load = () => busy(go, 'Searching the audit log…', async () => {
+    out.replaceChildren(el('p', { className: 'muted', textContent: 'Searching the audit log…' }));
     try {
       const p = params();
       dlJson.href = `/api/audit/download?${p}&format=json`; dlCsv.href = `/api/audit/download?${p}&format=csv`;
@@ -187,8 +191,7 @@ VIEWS.audit = () => {
         { key: 'actorOid', label: 'Actor oid', width: 280 },
       ], empty: 'No audit events match.' });
     } catch (e) { out.replaceChildren(el('p', { className: 'error', textContent: e.message })); }
-    finally { go.disabled = false; }
-  };
+  });
   go.onclick = load;
   view().replaceChildren(el('h1', { textContent: 'Audit' }),
     el('p', { className: 'muted', textContent: 'Append-only record of every write session and change (Azure Table r360audit, with an immutable copy of each event in r360audit-export). Times are Pacific.' }),
@@ -221,32 +224,62 @@ function renderWrite(me, banners) {
   clearTimeout(writeTimer);
   if (me.write.active) {
     // The button is always enabled except while its own request is in flight, and it always recovers. A failure is shown in the banner (no alert).
-    const end = el('button', { className: 'btn', textContent: 'End write session' });
+    const end = el('button', { className: 'btn', type: 'button', textContent: 'End write session' });
     const msg = el('span', { role: 'status' });
     end.onclick = async () => {
-      end.disabled = true; end.textContent = 'Ending...'; msg.textContent = '';
-      try { await api('/auth/write/end', false, { method: 'POST', keepOn401: true }); nav.reload(); }
-      catch (e) {
-        end.disabled = false; end.textContent = 'End write session';
-        if (e.status === 401) { msg.textContent = 'The app restarted, which ends every session, so this write session is already over. Signing you in again...'; setTimeout(nav.signin, 3000); }
-        else msg.textContent = e.message;
-      }
+      msg.textContent = '';
+      let ended = false;
+      await busy(end, 'Ending the write session…', async () => {
+        try { await api('/auth/write/end', false, { method: 'POST', keepOn401: true }); ended = true; }
+        catch (e) {
+          if (e.status === 401) { msg.textContent = 'The app restarted, which ends every session, so this write session is already over. Signing you in again…'; setTimeout(nav.signin, 3000); }
+          else msg.textContent = e.message;
+        }
+      });
+      if (ended) { leaving(end, 'Ended. Reloading…'); nav.reload(); }
     };
     banners.prepend(el('div', { className: 'banner write' }, `WRITE SESSION until ${fmtTime(me.write.until)}. Changes are audited. `, end, msg));
     ctl.replaceChildren();
     writeTimer = setTimeout(() => location.reload(), Math.max(1000, Date.parse(me.write.until) - Date.now() + 1000));
     return;
   }
-  const b = el('button', { className: 'btn', textContent: 'Elevate to write', disabled: !me.write.canElevate });
+  const b = el('button', { className: 'btn', type: 'button', textContent: 'Elevate to write', disabled: !me.write.canElevate });
   b.title = me.write.canElevate ? `Sign in again to start your ${me.write.ttlMinutes / 60}-hour write session (audited).` : me.write.blockedReason;
-  b.onclick = () => { location.href = '/auth/write/start'; };
+  b.onclick = () => { leaving(b, 'Opening sign-in…'); location.href = '/auth/write/start'; };
   ctl.replaceChildren(b);
 }
+// Buttons that live in index.html: Sign out leaves the page. The rest are instant (the theme button relabels itself, the
+// section headers and Menu open and close) and get the visible press from installPressFeedback.
+let feedbackInstalled = false;
+let pageSectionsInstalled = false;
+function installButtonFeedback() {
+  if (feedbackInstalled) return;
+  feedbackInstalled = true;
+  installPressFeedback(document);
+  const signout = document.querySelector('form[action="/auth/signout"]');
+  signout?.addEventListener('submit', () => leaving(signout.querySelector('button'), 'Signing out…'));
+}
+// A request link from Federation 360 (#offboard/... or #emergency/device?...) or HeatMap 360's Chaos Monkey page
+// (#new/chaos-<ID>?from=heatmap-360) must survive sign-in and Elevate to write, which both come back to /. It is kept
+// for this tab only and used once.
+const HANDOFF = /^#((offboard|emergency)\/|new\/chaos-)/;
+const RESTORE = /^#(offboard(\/|$)|emergency\/|new\/chaos-)/; // also the bare Offboard page, for its own Elevate to write button
+function keepHandoff() {
+  try { markChaosAuto(location.hash, document.referrer, sessionStorage); } catch { /* storage blocked: the form opens and you press Create */ }
+  try {
+    if (HANDOFF.test(location.hash)) sessionStorage.setItem(RETURN_KEY, location.hash);
+    else if (!location.hash) { const h = sessionStorage.getItem(RETURN_KEY); sessionStorage.removeItem(RETURN_KEY); if (h && RESTORE.test(h)) history.replaceState(null, '', h); }
+  } catch { /* storage blocked: the link just has to be opened again */ }
+}
 export async function boot() {
+  keepHandoff();
   const me = await api('/api/me');
   session.csrf = me.csrf;
   session.me = me;
   document.getElementById('who').textContent = me.user.upn;
+  installButtonFeedback();
+  // Every h2/h3 section on every page is collapsible and starts collapsed.
+  if (!pageSectionsInstalled) { pageSectionsInstalled = true; installPageSections(view()); }
   const b = document.getElementById('banners');
   renderWrite(me, b);
   if (me.fourEyes === 'testing') b.append(el('div', { className: 'banner testing', textContent: 'TESTING MODE: four-eyes is not enforced (self-approval allowed and audited).' }));

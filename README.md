@@ -3,7 +3,7 @@
 r360 is SecTechTalk's standalone tool for authoring, signing, piloting and publishing Intune and Defender remediations.
 It is for the people who write and approve remediation scripts for the fleet.
 
-Design: [docs/remediation-360-design.md](docs/remediation-360-design.md). Phase 2 plan: [docs/phase2-plan.md](docs/phase2-plan.md).
+Design: [docs/remediation-360-design.md](docs/remediation-360-design.md). Exchange 360 config snapshots stored by r360: [docs/ex360-snapshots.md](docs/ex360-snapshots.md). Phase 2 plan: [docs/phase2-plan.md](docs/phase2-plan.md).
 How-to guides: [docs/guides/](docs/guides/README.md) (fast or slow path, what is supported, device requirements, email-driven change requests, ServiceNow).
 
 r360 opens on **New hire > Overview**, written for someone new to Intune, Defender, GitHub and CI/CD. The rail groups
@@ -13,11 +13,20 @@ every page in four sections:
 |---|---|
 | New hire | Overview (the default page), Fast or slow path, What works where, Licenses by feature |
 | Change | Remediations, Changes, Deployments, Change requests, ServiceNow, Action Templates |
-| Roll out | Rollouts (Phase 3, not built yet), Fleet, Emergency, Certificates |
+| Roll out | Rollouts (Phase 3, not built yet), Fleet, Emergency, Offboard, Certificates |
 | Govern | Audit, Settings |
 
 Every page has its own URL (`#overview`, `#emergency`, ...), so Back, refresh and shared links work. Light and dark follow
 the operating system, with a toggle in the rail. The 360 app switcher at the top of the rail opens the other 360 apps.
+Every button that starts work shows a spinner and a specific label at once (Searching ServiceNow..., Merging...,
+Approving...), cannot be clicked twice, counts seconds after 3 seconds, then shows the result or the exact error. Instant
+buttons say what they did (Copied, Download started, Opened in a new tab). Busy buttons are solid copper with a spinner
+and disabled ones grey and dashed, so busy never looks disabled. `tests/button-feedback.test.mjs` fails when a new button
+has no feedback.
+Every section on every page can be collapsed and starts collapsed; pages with two or more sections get **Expand all** /
+**Collapse all**. A section you open stays open after a refresh, and a section produced by a button you just pressed
+opens by itself. Rail sections start collapsed too, except the one holding the current page, and the rail remembers the
+ones you opened.
 
 ![r360 Remediations page (local render with fictional sample data)](docs/images/r360-remediations.png)
 
@@ -74,6 +83,31 @@ The requester finds the device in Defender, picks the action and says why; an `e
 live only in the audit trail (`emergency.*` events). Approvers need a Defender role with **Active remediation actions**.
 Not built: Intune on-demand remediation (Track 2) and live response.
 
+### Offboard: end one person's access now (identity)
+Federation 360's **User lookup** finds every app a person can reach and how long they could still get in. Its
+**Disable user everywhere** and **Remove from one app** buttons open r360's **Offboard** page (`#offboard/...`) with the
+request filled in; the link survives sign-in and **Elevate to write**. r360 does the writes, as the signed-in operator,
+with the operator's own delegated token from the write session. Federation 360 stays read-only and re-reads afterwards.
+
+- **Disable user everywhere**: disable the account, revoke sign-in sessions (refresh tokens stop at once), run
+  **Provision on demand** in every SCIM app the person is assigned to (the apps from Federation 360 plus every direct
+  assignment r360 finds), so each app gets `active: false` now instead of at the next cycle (about 40 minutes), then
+  re-read the account to verify.
+- **Remove from one app**: delete the person's direct assignment to that app, Provision on demand in that app, then re-read
+  the assignments to verify. Access through a group is reported as "you need to act", not changed.
+- Each step is its own audit event (`offboard.*`) with its result; the request ends **done**, **partial** or **failed**.
+- **Four-eyes is off** for offboarding (`R360_OFFBOARD_FOUR_EYES=off`, the default): an operator with the
+  `emergencyApprover` or `admin` role runs the request at once. Set it to `on` and a different `emergencyApprover` must run it.
+- Permissions: r360-write gets the delegated Graph permissions `User.Read.All`, `User.EnableDisableAccount.All`,
+  `User.RevokeSessions.All`, `Synchronization.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All`, added with admin consent by
+  `tools/Add-R360OffboardPermissions.ps1` (additive; on a local install use it instead of re-running
+  `New-R360AppRegistration.ps1`, which resets r360-write's redirect URIs). Entra still checks the operator's role on every call: User
+  Administrator for ordinary users, Privileged Authentication Administrator to disable an admin, Application Administrator
+  or Cloud Application Administrator for Provision on demand and removing assignments.
+- Device containment for a leaver's PC uses **Emergency**: Federation 360 opens `#emergency/device?name=<device>&action=isolate`
+  with the device name filled in, and the usual second-person approval applies.
+- Not live-tested yet: the permissions above have not been consented, so every Graph call so far ran against test fakes.
+
 ### Deployments lane (Terraform through GitHub Actions)
 A second lane for configuration kept as Terraform, such as a test tenant's app registrations and groups. r360 is the control
 plane and GitHub Actions does the running: a change is a pull request on the target repo with the plan posted on it, merging
@@ -100,6 +134,23 @@ query pasted from a ServiceNow list view. Each result shows the r360 change requ
 ### Action Templates (placeholder)
 Named actions (often a script) that will run on items from a ServiceNow query. The page and the `actionTemplates` field in
 the queries file exist; r360 shows the templates but does not run them yet.
+
+### Chaos Monkey templates (from HeatMap 360)
+77 read-only tests that prove a hardening setting is really in force, in three tiers: 19 active probes, 23 checks of the
+machine itself and 35 checks of AD objects (LAPS, Kerberos and RC4, SMB and NTLM, AD CS, Entra sync and AD hygiene).
+HeatMap 360's Chaos Monkey page links to `#new/chaos-<ID>`, which opens New remediation filled in with that test; it
+then goes through the normal change pipeline (canary group first). Each test only reads and asks, never changes the
+machine or anything else: PASS exits 0, FAIL and COULD NOT TEST exit 1, and the first line of output is the verdict.
+The test bodies live in `chaos/tests/<ID>.ps1` with shared helpers in `chaos/lib.ps1`; `node tools/build-chaos.mjs`
+builds one self-contained `chaos/dist/<ID>.detect.ps1` per test (Intune runs one file), and CI runs PSScriptAnalyzer on
+them. Four tests (N3, L2, E4, V3) report COULD NOT TEST until they get their own login client.
+
+### Exchange 360 config snapshots
+Exchange 360 sends a read-only snapshot of every mail flow setting to `POST /api/ex360/snapshots` with the person's own
+Entra token (`Snapshots.ReadWrite` on r360-web, author or admin in `approvers.json`). r360 checks the token and the body
+(format, `readOnly: true`, nothing shaped like a token or key) and the r360 GitHub App commits it to a private snapshot
+repository, one commit per snapshot, audited as `ex360.snapshot.save`. Exchange 360's Config snapshots page lists and
+compares them. Details: [docs/ex360-snapshots.md](docs/ex360-snapshots.md).
 
 ### Safeguards
 - **Four-eyes testing mode**: until it is switched to enforced, the author may approve their own change. Every
@@ -181,7 +232,9 @@ Not scripted: Defender role with Active remediation actions (emergency approvers
 ### Test
 ```powershell
 npm ci; npm test                                    # unit tests
+node tools/build-chaos.mjs --check                  # Chaos Monkey scripts match chaos/tests and chaos/lib.ps1
 ```
+About 360 tests. They run on Windows and Linux (a Windows checkout's CRLF line endings are handled).
 
 ### Run it locally, always on (how r360 is hosted today)
 Requirements: Docker Desktop (starts at logon), the PC onboarded to Azure Arc, PowerShell 7.4+ in an elevated window.
@@ -217,6 +270,8 @@ the API 401 and the startup self-checks (managed identity token, GitHub App read
 | T | Action Templates: named actions (often a script) run on items from a ServiceNow query | Placeholder page (2026-11-15) |
 | 4 | Emergency path: two-person Defender actions, 4 hours, 1 device (Track 1). Intune on-demand remediation (Track 2) and live response not built | Built (2026-11-16) |
 | N | New hire section: Overview as the default page, Fast or slow path, What works where, Licenses by feature with what to buy and cost | Built (2026-11-16) |
+| M | Chaos Monkey: 77 read-only hardening tests as remediation templates, opened from HeatMap 360 | Built (2026-11-26) |
+| X | Exchange 360 config snapshots stored in a private GitHub repo through r360 | Built (2026-11-26) |
 | H | Local hosting: always-on private Docker container with the Arc managed identity; Azure Container App deactivated | Live (2026-11-15) |
 
 Four-eyes is in testing mode (self-approval allowed and audited) until it is switched to enforced.

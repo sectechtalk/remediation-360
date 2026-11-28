@@ -15,6 +15,8 @@ import { createServiceNowSearch } from './servicenow.mjs';
 import { createCspReports, REPORT_ONLY_POLICY } from './csp-report.mjs';
 import { createDefender } from './defender.mjs';
 import { createEmergency, REQUEST_ROLES, APPROVE_ROLES } from './emergency.mjs';
+import { createEx360Snapshots, createSnapshotStore, createTokenVerifier, snapshotSettings } from './ex360-snapshots.mjs';
+import { createOffboard, createEntraWriter, RUN_ROLES as OFFBOARD_RUN_ROLES } from './offboard.mjs';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const CACHE_MS = 60000;
@@ -29,7 +31,7 @@ export const SECURITY_HEADERS = {
 
 // Reads are GET. State-changing routes (sign-out, ending a write session, and the writes S3 adds) pass the CSRF guard, and
 // anything that writes Intune goes through write.requireWrite(...).
-export function createApp({ config, sessions, auth, data, github, audit, log = console, fetcher = fetch, now = () => Date.now(), mailbox = null, llm = null, servicenow = null, defender = null }) {
+export function createApp({ config, sessions, auth, data, github, audit, log = console, fetcher = fetch, now = () => Date.now(), mailbox = null, llm = null, servicenow = null, defender = null, entra = null, ex360 = null }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
@@ -41,6 +43,17 @@ export function createApp({ config, sessions, auth, data, github, audit, log = c
   const cspReports = createCspReports({ log: line => log.log?.(line) });
   app.locals.cspReports = cspReports;
   app.use(cspReports.router);
+
+  // Exchange 360 config snapshots: called by the Exchange 360 server with the person's bearer token, so they sit before
+  // the browser sign-in and the CSRF guard (no cookie is used). Off until R360_EX360_SNAPSHOT_REPO is set.
+  {
+    const settings = ex360?.settings || snapshotSettings(process.env, config);
+    app.use(createEx360Snapshots({
+      config, settings, github, audit, resolveRoles, log,
+      verify: ex360?.verify || createTokenVerifier({ tenantId: config.tenantId, audiences: settings.audiences, fetcher, now }),
+      store: ex360?.store || createSnapshotStore({ settings, github, fetcher }),
+    }));
+  }
 
   const sessionOf = req => sessions.get(parseCookies(req.headers.cookie)[SESSION_COOKIE]);
   const pimGate = async s => { const token = await auth.graphToken(s); return (await data.pim(token, s.user.oid)).gate; };
@@ -244,6 +257,17 @@ app.post('/api/changes/promote', approver, run(req => changes.promote(req.r360.u
   app.post('/api/emergency/:id/approve', emergencyApprover, run(req => emergency.approve(req.r360.user, eid(req), { token: defToken(req) }), 'The emergency request could not be approved. Check the audit trail for what happened.'));
   app.post('/api/emergency/:id/close', emergencyAny, run(req => emergency.close(req.r360.user, req.r360roles || [], eid(req), req.body), 'The emergency request could not be closed. Check the audit trail for what happened.'));
   app.post('/api/emergency/:id/refresh', emergencyAny, run(req => emergency.refresh(req.r360.user, eid(req), { token: defToken(req) }), 'Defender could not be asked for the status.'));
+
+  // ---- Offboard (identity): Disable user everywhere / Remove from one app, run as the operator, every step audited ----
+  // Federation 360 opens #offboard/... with the request filled in. Graph is called only with the caller's own write session.
+  const offboard = createOffboard({ config, audit, entra: entra || createEntraWriter({ fetcher }), now, log });
+  const offboarder = write.requireWrite({ roles: OFFBOARD_RUN_ROLES });
+  const offToken = req => () => auth.offboardToken(req.r360write.homeAccountId);
+  app.get('/api/offboard', run(async () => ({ ...(await offboard.list()), fetchedAt: new Date(now()).toISOString() }), 'The offboard requests could not be read.'));
+  app.get('/api/offboard/preview', offboarder, run(req => offboard.preview(offToken(req), typeof req.query.user === 'string' ? req.query.user : ''), 'The person could not be read from Entra.'));
+  app.post('/api/offboard', offboarder, run(req => offboard.request(req.r360.user, req.body, { token: offToken(req) }), 'The offboard request could not be run. Check the audit trail for what happened.'));
+  app.post('/api/offboard/:id/run', offboarder, run(req => offboard.approve(req.r360.user, req.r360roles || [], eid(req), { token: offToken(req) }), 'The offboard request could not be run. Check the audit trail for what happened.'));
+  app.post('/api/offboard/:id/cancel', offboarder, run(req => offboard.cancel(req.r360.user, req.r360roles || [], eid(req), req.body), 'The offboard request could not be cancelled.'));
 
   app.get('/api/remediations', cached('remediations', t => data.remediations(t)));
   app.get('/api/fleet', cached('fleet', t => data.fleet(t)));

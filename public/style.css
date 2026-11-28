@@ -57,7 +57,7 @@ main.center { max-width: 640px; margin: 10vh auto; padding: 0 16px; }
   .shell { grid-template-columns: minmax(0, 1fr); }
   .rail { position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 60; transform: translateX(-100%); transition: transform .2s ease; }
   body.nav-open .rail { transform: none; box-shadow: 0 0 0 100vmax rgb(0 0 0 / .45); }
-  .btn.nav-toggle { display: inline-block; align-self: flex-start; position: sticky; top: max(8px, env(safe-area-inset-top, 0px)); margin: 8px 0 0 max(16px, env(safe-area-inset-left, 0px)); z-index: 30; background: var(--surface); }
+  .btn.nav-toggle { display: inline-block; align-self: flex-start; position: sticky; top: max(8px, env(safe-area-inset-top, 0px)); margin: 8px 0 0 max(16px, env(safe-area-inset-left, 0px)); z-index: 30; }
   #view { padding-top: 12px; }
 }
 
@@ -68,14 +68,23 @@ h1 { margin: 0 0 8px; } h2 { font-size: var(--text-md); margin: 16px 0 8px; } h3
 .banner.testing { background: var(--crit); color: var(--surface); }
 .banner.warn { background: var(--warn); color: var(--surface); }
 .banner.write { background: var(--crit); color: var(--surface); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.banner.write .btn { border-color: var(--surface); color: var(--surface); padding: 0 10px; }
-.banner.write .btn:hover { background: var(--surface); color: var(--crit); }
-.banner.write .btn:disabled { background: transparent; border-color: var(--surface); color: var(--surface); opacity: .6; cursor: progress; }
+.banner.write .btn { border-color: var(--surface); background: var(--surface); color: var(--crit); padding: 0 10px; }
+.banner.write .btn:hover { background: var(--crit-soft); border-color: var(--surface); color: var(--crit); }
+.banner.write .btn.is-busy, .banner.write .btn.is-busy:disabled { background: var(--surface); border: 1px solid var(--surface); color: var(--crit); cursor: progress; }
 input[type=text], input[type=number], select, textarea { font: inherit; padding: 4px 8px; background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; }
-/* One button style for the whole app. Disabled buttons are greyed and say why in the tooltip. */
-.btn { display: inline-block; font: inherit; font-weight: var(--weight-medium); padding: 5px 12px; border-radius: 6px; border: 1px solid var(--accent); background: transparent; color: var(--accent); cursor: pointer; text-decoration: none; }
+/* One button style for the whole app. Buttons are filled (copper tint, copper border) so they never match the page.
+   Disabled buttons are grey with a dashed border and say why in the tooltip. A busy button (public/busy.js) stays
+   copper, filled solid, with a spinner and a progress cursor, so "working" never looks like "not allowed". */
+.btn { display: inline-block; font: inherit; font-weight: var(--weight-medium); padding: 5px 12px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent-soft); color: var(--accent); cursor: pointer; text-decoration: none; }
 .btn:hover { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
-.btn:disabled, .btn[aria-disabled="true"] { border-color: var(--line); color: var(--muted); background: transparent; cursor: not-allowed; }
+.btn:disabled, .btn[aria-disabled="true"] { border: 1px dashed var(--muted); color: var(--muted); background: var(--surface-2); cursor: not-allowed; }
+.btn.is-busy, .btn.is-busy:disabled, .btn.is-busy:hover { border: 1px solid var(--accent-strong); background: var(--accent-strong); color: var(--accent-ink); cursor: progress; }
+.btn.is-busy::before { content: ""; display: inline-block; width: .85em; height: .85em; margin-right: .45em; vertical-align: -.1em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: r360-spin .8s linear infinite; }
+.btn.is-done { border-color: var(--ok); background: var(--ok-soft); color: var(--ok); }
+.btn.pressed { transform: translateY(1px); filter: brightness(.92); }
+@keyframes r360-spin { to { transform: rotate(360deg); } }
+/* Reduced motion: the global rule above stops the spin; the ring stays, solid, so it still reads as busy. */
+@media (prefers-reduced-motion: reduce) { .btn.is-busy::before { border-right-color: currentColor; opacity: .6; } }
 .toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
 .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 table { border-collapse: collapse; font-size: var(--text-sm); table-layout: fixed; min-width: 100%; }
@@ -114,7 +123,7 @@ textarea { max-width: 100%; } textarea.code { font-family: var(--font-mono); fon
 .group-pick[aria-pressed="true"] { outline: 2px solid var(--accent); font-weight: var(--weight-semibold); }
 .promote-steps { padding-left: 0; list-style: none; }
 .promote-step { margin: 10px 0; }
-.promote-step > h3 { margin: 6px 0; }
+.promote-step h3 { margin: 6px 0; }
 .selected-targets { margin: 8px 0; padding: 6px 8px; border: 1px dashed var(--line); border-radius: 6px; }
 .selected-targets h4 { margin: 0 0 4px; font-size: var(--text-sm); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -146,6 +155,7 @@ th button:focus-visible { outline-offset: 1px; }
   .nav-item.active, .nav-item[aria-current="page"], .group-pick[aria-pressed="true"], .app-switch-item[aria-current="page"] { outline: 2px solid Highlight; outline-offset: -2px; }
   .pill, .step, .chip, .card, .menu, .banner, .soak-banner, .rail { border: 1px solid CanvasText; }
   .btn:disabled, .btn[aria-disabled="true"] { color: GrayText; border-color: GrayText; }
+  .btn.is-busy, .btn.is-busy:disabled { color: Highlight; border: 1px solid Highlight; }
   :focus-visible { outline-color: Highlight; }
 }
 
@@ -190,3 +200,18 @@ th button:focus-visible { outline-offset: 1px; }
   .guide-terms dd { margin-bottom: 8px; }
   .guide-table tbody th { min-width: 120px; }
 }
+
+/* Collapsible page sections (page-sections.js): every h2/h3 section is a <details>, closed by default. The heading sits
+   inside the summary with a chevron that points right when closed and down when open. */
+.page-section { margin: 0; }
+.page-section-head { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px; border-radius: 6px; margin: 12px -6px 4px; padding: 4px 6px; }
+.page-section-head::-webkit-details-marker { display: none; }
+.page-section-head::before { content: ""; flex: none; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; color: var(--muted); }
+.page-section[open] > .page-section-head::before { transform: rotate(45deg); }
+.page-section-head:hover { background: var(--surface-2); }
+.page-section-head > h2, .page-section-head > h3 { flex: 1; min-width: 0; margin: 0; }
+.card > .page-section > .page-section-head { margin-top: 0; margin-bottom: 0; }
+.card > .page-section[open] > .page-section-head { margin-bottom: 6px; }
+.page-section-body { padding-left: 14px; }
+.btn.sections-all { margin: 0 0 8px; }
+.toolbar > .btn.sections-all { margin: 0; }

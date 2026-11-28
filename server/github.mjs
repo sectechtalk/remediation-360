@@ -450,7 +450,10 @@ export function createGitHubApp({ config, miToken, fetcher = fetch, now = () => 
     return { ...issueOf(i), githubRequestId: lastRequestId };
   }
 
-  return { appJwt, installationToken, catalog, readChangeFiles, listPulls, getPull, proposeChange, updateChange, discardChange,
+  // A token for one more repository of the same owner (the Exchange 360 snapshots repository), with exactly these permissions.
+  const repoToken = async (permissions, what, repoFull) => (await mint(permissions, what, repoFull)).token;
+
+  return { appJwt, installationToken, repoToken, catalog, readChangeFiles, listPulls, getPull, proposeChange, updateChange, discardChange,
     getChecks, behindBy, unresolvedThreads, commentOnPull, rejectChange, mergeChange, updateBranch, signingRun, downloadSignedArtifact,
     deployRuns, deployRunJobs, deployPulls, deployPull, deployPlanComment, mergeDeployPull, dispatchDeployWorkflow,
     listIssues, getIssue, issueComments, createIssue, commentOnIssue, closeIssue, updateIssue, addIssueLabels, issueWriteToken };

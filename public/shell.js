@@ -33,9 +33,12 @@ export function installShell(doc = document) {
   if (rail && rail.dataset.sections !== 'app' && rail.querySelector('.nav-label')) {
     let storage = null; try { storage = doc.defaultView.localStorage; } catch { /* storage blocked */ }
     const app = host?.dataset.app || 'app';
-    const sections = installNavSections(rail, storage, `${app.replace(/-/g, '')}.nav.collapsed`);
-    const showCurrent = () => setTimeout(() => sections.expandItem(rail.querySelector('[aria-current="page"]')), 0);
+    // Every section starts collapsed; the browser remembers the ones you open (a new key, so old saved state is ignored).
+    const sections = installNavSections(rail, storage, `${app.replace(/-/g, '')}.nav.open`, { defaultCollapsed: true });
+    const showCurrent = () => setTimeout(() => sections.expandItem(rail.querySelector('.nav-item[aria-current="page"]')), 0);
     doc.defaultView.addEventListener('hashchange', showCurrent);
+    // The app marks the current page after it signs in, which is later than this runs, so also watch for that mark.
+    new doc.defaultView.MutationObserver(showCurrent).observe(rail, { attributes: true, subtree: true, attributeFilter: ['aria-current'] });
     showCurrent();
   }
   const toggle = doc.getElementById('nav-toggle');

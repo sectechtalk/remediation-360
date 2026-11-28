@@ -1,4 +1,6 @@
 import { renderTable } from './table.js';
+import { busy } from './busy.js';
+import { chaosPreset, takeChaosAuto } from './chaos.js';
 
 // Authoring UI (S3): the New/Edit form, the diff preview, and the Changes tab. The server enforces everything; this only
 // collects input and shows state. No inline script or style (CSP), one button style (.btn).
@@ -65,16 +67,26 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
   }
 
   // mode: 'new' | 'edit' (a remediation on main) | 'update' (an open change)
-  async function form(mode, key) {
+  // preset: a Chaos Monkey template (public/chaos.js) when a new remediation is opened from HeatMap 360.
+  async function form(mode, key, preset = null) {
     stop();
-    const title = mode === 'new' ? 'New remediation' : mode === 'edit' ? `Edit remediation ${key}` : `Update change #${key}`;
+    const title = mode === 'new' ? (preset ? `New remediation: Chaos Monkey test ${preset.id}` : 'New remediation') : mode === 'edit' ? `Edit remediation ${key}` : `Update change #${key}`;
     view().replaceChildren(el('h1', { textContent: title }), el('p', { className: 'muted', textContent: 'Loading...' }));
-    const block = authorBlock();
-    let src = null, headSha = null, folder = mode === 'new' ? '' : key;
+    let block = authorBlock();
+    let src = null, headSha = null, folder = mode === 'new' ? (preset?.folder || '') : key, exists = false;
     try {
       if (mode === 'edit') src = await api(`/api/changes/source/${encodeURIComponent(key)}`);
       if (mode === 'update') { src = await api(`/api/changes/${Number(key)}/source`); folder = src.folder; headSha = src.headSha; }
+      if (preset) src = { meta: preset.meta, detect: preset.detect, remediate: preset.remediate };
     } catch (e) { view().replaceChildren(el('h1', { textContent: title }), el('p', { className: 'error', textContent: e.message })); return; }
+    // A template whose folder is already on main is not created twice: point to it instead.
+    if (preset && !block) {
+      try { await api(`/api/changes/source/${encodeURIComponent(preset.folder)}`); exists = true; } catch { /* not on main yet (or not readable): the server checks again on create */ }
+      if (exists) block = `remediations/${preset.folder} already exists on main. Open it with Edit instead of creating it again.`;
+    }
+    // Opened by "Create r360 change" on HeatMap's Chaos Monkey page: create it now, without a second press.
+    let auto = false;
+    if (preset && !authorBlock()) { try { auto = takeChaosAuto(preset.id, sessionStorage) && !exists; } catch { auto = false; } }
     const m = src?.meta || DEFAULT_META;
     const sch = m.schedule || {};
     const f = {
@@ -114,20 +126,22 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
     const status = el('p', { role: 'status', className: 'muted' });
     const preview = el('div');
     const outcome = el('div');
-    const previewBtn = el('button', { className: 'btn', textContent: 'Validate and preview', disabled: !!block, title: block || 'Check the files and show what will be committed.' });
-    const submit = el('button', { className: 'btn', textContent: mode === 'update' ? 'Push update to the pull request' : 'Create pull request', disabled: !!block, title: block || 'Creates a branch and a pull request as the r360 GitHub App. Audited.' });
+    const previewBtn = el('button', { className: 'btn', type: 'button', textContent: 'Validate and preview', disabled: !!block, title: block || 'Check the files and show what will be committed.' });
+    const submit = el('button', { className: 'btn', type: 'button', textContent: mode === 'update' ? 'Push update to the pull request' : 'Create pull request', disabled: !!block, title: block || 'Creates a branch and a pull request as the r360 GitHub App. Audited.' });
     const fail = e => { status.className = 'error'; status.textContent = e.message; if (e.details) status.append(el('ul', {}, ...e.details.map(d => el('li', { textContent: d })))); };
-    const call = async dry => {
-      status.className = 'muted'; status.textContent = dry ? 'Validating...' : 'Working...'; preview.replaceChildren(); outcome.replaceChildren();
-      previewBtn.disabled = submit.disabled = true;
+    // The clicked button shows it is busy; the other one is disabled so nothing runs twice.
+    const call = (dry, btn, text) => busy(btn, text, async () => {
+      const other = btn === previewBtn ? submit : previewBtn;
+      status.className = 'muted'; status.textContent = dry ? 'Validating the files on the server…' : mode === 'update' ? 'Pushing the update to GitHub…' : 'Creating the branch and pull request on GitHub…'; preview.replaceChildren(); outcome.replaceChildren();
+      other.disabled = true;
       try {
         const b = body();
         const path = mode === 'update' ? `/api/changes/${Number(key)}/update` : '/api/changes';
         const r = await postJson(path, dry && mode !== 'update' ? { ...b, dryRun: true } : b, dry && mode === 'update');
         return r;
       } catch (e) { fail(e); return null; }
-      finally { previewBtn.disabled = submit.disabled = !!block; }
-    };
+      finally { other.disabled = !!block; }
+    });
     // Updates have no server dry run, so the preview of an update is the client diff only.
     const postJson = async (path, b, clientOnly) => {
       if (clientOnly) return { clientOnly: true };
@@ -136,14 +150,15 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
     const showDiff = r => {
       const b = body();
       const meta = JSON.stringify(b.meta, null, 2) + '\n';
-      const beforeMeta = src?.meta ? JSON.stringify(src.meta, null, 2) + '\n' : '';
+      const before = preset ? null : src;
+      const beforeMeta = before?.meta ? JSON.stringify(before.meta, null, 2) + '\n' : '';
       preview.replaceChildren(el('h2', { textContent: 'Preview' }),
         r && !r.clientOnly ? el('p', { className: 'muted', textContent: `${r.files.map(x => `${x.path.split('/').pop()}: ${x.status}`).join(', ')}. Assignment group ${r.groupId} (decided by the server). Open changes: ${r.openChanges} of ${r.maxOpenChanges}.` }) : null,
-        diffView('remediation.json (as entered; the server writes it in canonical order)', beforeMeta, meta), diffView('detect.ps1', src?.detect || '', b.detect), diffView('remediate.ps1', src?.remediate || '', b.remediate));
+        diffView('remediation.json (as entered; the server writes it in canonical order)', beforeMeta, meta), diffView('detect.ps1', before?.detect || '', b.detect), diffView('remediate.ps1', before?.remediate || '', b.remediate));
     };
-    previewBtn.onclick = async () => { const r = await call(true); if (r) { status.className = 'ok'; status.textContent = 'Valid. Nothing has been written yet.'; showDiff(r); } };
+    previewBtn.onclick = async () => { const r = await call(true, previewBtn, 'Validating…'); if (r) { status.className = 'ok'; status.textContent = 'Valid. Nothing has been written yet.'; showDiff(r); } };
     submit.onclick = async () => {
-      const r = await call(false);
+      const r = await call(false, submit, mode === 'update' ? 'Pushing the update…' : 'Creating the pull request…');
       if (!r) return;
       status.className = 'ok'; status.textContent = mode === 'update' ? `Pushed an update to change #${r.number}.` : `Created change #${r.number}.`;
       const link = safeUrl(r.url);
@@ -154,7 +169,8 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
     };
     view().replaceChildren(...nodes([el('h1', { textContent: title }),
       el('p', { className: 'muted', textContent: mode === 'new' ? 'New remediations are assigned to the canary group only. The scripts go in unsigned; CI signs them after merge.' : 'The assignment group cannot be changed here. The scripts go in unsigned; CI signs them after merge.' }),
-      block ? el('p', { className: 'warn', textContent: block }) : null,
+      preset ? el('p', { className: 'callout', textContent: `Filled in from the Chaos Monkey template for ${preset.id}${preset.from ? `, opened from ${preset.from}` : ''}. The scripts are placeholders until the real test is written: detect.ps1 always reports NOT BUILT (exit 1), and remediate.ps1 changes nothing. ${auto ? 'Creating the pull request now, because you pressed Create r360 change in HeatMap.' : 'Review it, then press Create pull request.'}` }) : null,
+      block ? el('p', { className: 'warn' }, block, exists ? el('span', {}, ' ', el('a', { href: `#edit/${encodeURIComponent(preset.folder)}`, textContent: `Open ${preset.folder}` })) : null) : null,
       el('div', { className: 'form' },
         field('Folder name', f.folder, mode === 'new' ? 'Letters, digits, dot, underscore, hyphen. Becomes remediations/<folder>.' : null),
         field('Display name', f.displayName), field('Description', f.description, 'Optional. Left empty, it is the display name.'), field('Publisher', f.publisher),
@@ -164,6 +180,7 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
       el('h2', { textContent: 'detect.ps1' }), f.detect, upload(f.detect, 'detect.ps1'),
       el('h2', { textContent: 'remediate.ps1' }), f.remediate, upload(f.remediate, 'remediate.ps1'),
       el('div', { className: 'toolbar' }, previewBtn, submit, el('a', { className: 'btn', href: '#remediations', textContent: 'Cancel' })), status, outcome, preview]));
+    if (auto) await submit.onclick();
   }
 
   const stepper = steps => el('span', { className: 'stepper' }, ...steps.map(s => el('span', { className: `step ${s.state}`, textContent: s.label, title: s.state })));
@@ -257,14 +274,15 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
       const search = async () => {
         const q = input.value.trim(), mine = ++seq;
         if (q.length < 2) { status.className = 'muted'; status.textContent = 'Type at least 2 characters.'; return; }
-        status.className = 'muted'; status.textContent = 'Searching...';
+        status.className = 'muted'; status.textContent = `Searching Entra ID for groups matching "${q}"…`;
         try { const r = await api(`/api/changes/promote-groups?q=${encodeURIComponent(q)}`); if (mine === seq) render(r); }
         catch (e) { if (mine === seq) { status.className = 'error'; status.textContent = e.message; } }
       };
       input.oninput = () => { clearTimeout(timer); timer = setTimeout(search, 300); };
       input.onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); clearTimeout(timer); search(); } };
       list.replaceChildren(allDevices);
-      const searchBtn = el('button', { type: 'button', className: 'btn', textContent: 'Search', onclick: () => { clearTimeout(timer); search(); } });
+      const searchBtn = el('button', { type: 'button', className: 'btn', textContent: 'Search' });
+      searchBtn.onclick = () => { clearTimeout(timer); return busy(searchBtn, 'Searching groups…', search); };
       if (d.defaultTarget?.groupId) {
         // The optional R360_PROD_GROUP_ID default: preselect it, if it still exists.
         api(`/api/changes/promote-groups?q=${encodeURIComponent(d.defaultTarget.groupId)}`).then(r => {
@@ -285,17 +303,18 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
     const promotePanel = (c, d) => {
       const ev = d.evidence;
       const result = el('p', { role: 'status', className: 'muted' });
-      const close = ael('button', { className: 'btn', textContent: 'Close (changes nothing)', title: 'Only hides this panel. Nothing is created, changed or assigned.', 'aria-label': 'Close this panel. It only hides the panel; nothing is created, changed or assigned.', onclick: () => panel.replaceChildren() });
-      const send = async (btn, body) => {
-        btn.disabled = true; result.className = 'muted'; result.textContent = 'Creating the promotion pull request...';
+      const close = ael('button', { type: 'button', className: 'btn', textContent: 'Close (changes nothing)', title: 'Only hides this panel. Nothing is created, changed or assigned.', 'aria-label': 'Close this panel. It only hides the panel; nothing is created, changed or assigned.', onclick: () => panel.replaceChildren() });
+      const send = (btn, body) => busy(btn, 'Creating the promotion PR…', async () => {
+        result.className = 'muted'; result.textContent = 'Checking the canary evidence again and creating the promotion pull request on GitHub…';
         try {
           const r = await api('/api/changes/promote', false, { method: 'POST', body });
           const u = safeUrl(r.url);
           result.className = r.warning ? 'warn' : 'ok';
           result.replaceChildren(...nodes([`Promotion pull request #${r.number} created${r.soakOverride ? ` with a SOAK OVERRIDE (${r.soakDays} of ${r.soakRequired} days)` : ''}. Approve, merge and publish it like any change. `, u ? el('a', { href: u, target: '_blank', rel: 'noopener', textContent: 'Open on GitHub' }) : null, r.warning ? ` ${r.warning}` : null]));
           last = ''; await load();
-        } catch (e) { result.className = 'error'; result.textContent = e.message; btn.disabled = false; }
-      };
+          return true;
+        } catch (e) { result.className = 'error'; result.textContent = e.message; return false; }
+      }).then(ok => { if (ok) btn.disabled = true; });
       const items = ev.checks.map(k => el('li', {}, pill(k.ok ? 'pass' : 'FAIL', k.ok ? 'ok' : 'bad'), ` ${k.label}: ${k.detail}`));
       const kids = [el('h2', { textContent: `Promote ${c.folder}` }),
         el('p', { className: 'muted', textContent: `Canary version ${String(d.canarySha || '').slice(0, 12)}. Soak: ${ev.daysSoaked} of ${ev.daysRequired} days. This creates a pull request that changes only the assignment, from the canary group to the targets you choose below. Nothing is assigned to them until that pull request is approved, merged, signed and published.` }),
@@ -305,7 +324,7 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
       const step = (num, title, ...body) => el('li', { className: 'promote-step' }, el('h3', { textContent: `Step ${num}. ${title}` }), ...body);
       if (d.canPromote || d.canOverride) {
         const override = !d.canPromote;
-        const go = el('button', { className: 'btn', disabled: true });
+        const go = el('button', { type: 'button', className: 'btn', disabled: true });
         const why = override ? ael('textarea', { className: 'override-reason', rows: 3, maxLength: 500, 'aria-label': 'Override reason', placeholder: `Why is it safe to promote after ${ev.daysSoaked} of ${ev.daysRequired} days? At least ${d.requiredReasonLength} characters. This is recorded in the audit trail and on the pull request.` }) : null;
         let pk = null;
         const sync = () => {
@@ -329,11 +348,11 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
       kids.push(result);
       return el('div', {}, ...kids);
     };
-    const openPromote = async c => {
+    const openPromote = async (c, btn) => busy(btn, 'Reading canary evidence…', async () => {
       panel.replaceChildren(el('p', { className: 'muted', textContent: `Reading the canary evidence for ${c.folder} from Intune...` }));
       try { panel.replaceChildren(promotePanel(c, await api(`/api/changes/promote-evidence/${encodeURIComponent(c.folder)}`))); }
       catch (e) { panel.replaceChildren(el('p', { className: 'error', textContent: e.message })); }
-    };
+    });
     const load = async () => {
       try {
         const d = await api('/api/changes');
@@ -344,8 +363,8 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
         const block = authorBlock();
         const wblock = writeBlock();
         // One server-side action (approve, reject, merge, verify). Two clicks, like Discard; the server decides everything.
-        const act = (label, path, getBody, { can, why, confirm, busy, ask, done }) => {
-          const b = el('button', { className: 'btn', textContent: label, disabled: !!wblock || !can, title: wblock || (can ? confirm : why) || '' });
+        const act = (label, path, getBody, { can, why, confirm, busy: busyText, ask, done }) => {
+          const b = el('button', { type: 'button', className: 'btn', textContent: label, disabled: !!wblock || !can, title: wblock || (can ? confirm : why) || '' });
           let reasonBox = null;
           b.onclick = async () => {
             if (b.dataset.armed !== '1') {
@@ -355,12 +374,16 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
             }
             const body = getBody(reasonBox?.value || '');
             if (ask && String(body.reason || '').trim().length < 3) { note.className = 'error'; note.textContent = 'Enter a reason of at least 3 characters.'; return; }
-            b.disabled = true; b.textContent = busy;
-            try {
-              const r = await api(path, false, { method: 'POST', body });
-              note.className = r.warning ? 'warn' : 'ok'; note.textContent = [done(r), r.warning].filter(Boolean).join(' ');
-              last = ''; await load();
-            } catch (e) { note.className = 'error'; note.textContent = e.message; b.disabled = false; b.textContent = label; delete b.dataset.armed; reasonBox?.remove(); }
+            // Back to the plain label first, so the button returns to it if the action fails.
+            b.textContent = label; delete b.dataset.armed;
+            note.className = 'muted'; note.textContent = busyText;
+            await busy(b, busyText, async () => {
+              try {
+                const r = await api(path, false, { method: 'POST', body });
+                note.className = r.warning ? 'warn' : 'ok'; note.textContent = [done(r), r.warning].filter(Boolean).join(' ');
+                last = ''; await load();
+              } catch (e) { note.className = 'error'; note.textContent = e.message; reasonBox?.remove(); }
+            });
           };
           return b;
         };
@@ -391,27 +414,29 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
           { key: 'actions', label: 'Actions', width: 520, render: c => {
             if (c.merged) {
               const dest = c.promote ? (c.promoteInfo?.target ? (c.promoteInfo.target.kind === 'allDevices' ? 'All devices' : c.promoteInfo.target.kind === 'groups' ? `${c.promoteInfo.target.groupIds.length} groups` : (c.promoteInfo.target.name || 'the chosen group')) : 'the chosen target') : 'canary';
-              const publish = act(`Publish to ${dest}`, `/api/changes/${c.number}/publish`, () => ({ mergeSha: c.mergeSha }), { can: c.canPublish, why: c.publishBlock, confirm: `Publish the CI-signed artifact for this commit to Intune, assigned to ${c.promote ? dest : 'the canary group'} only, as you. ${c.promote ? 'The canary evidence is checked again first. ' : ''}Audited.`, busy: 'Publishing...',
+              const publish = act(`Publish to ${dest}`, `/api/changes/${c.number}/publish`, () => ({ mergeSha: c.mergeSha }), { can: c.canPublish, why: c.publishBlock, confirm: `Publish the CI-signed artifact for this commit to Intune, assigned to ${c.promote ? dest : 'the canary group'} only, as you. ${c.promote ? 'The canary evidence is checked again first. ' : ''}Audited.`, busy: 'Publishing to Intune…',
                 done: r => { const certs = (r.signingProfiles || []).some(p => p.added?.length) ? ' The code-signing certificate profiles now reach that target too.' : ''; return (r.already ? `Intune already holds this signed version.${certs || ' Nothing changed.'}` : `${r.created ? 'Created' : 'Updated'} in Intune and assigned to the ${dest} group.${certs}${r.selfApproved ? ' Self-published (testing mode).' : ''}`); } });
-              const promote = c.published && !c.promote && !c.supersededBy ? el('button', { className: 'btn', textContent: 'Promote', disabled: !!wblock || !c.canPromote, title: wblock || (c.canPromote ? 'Check the canary evidence, then create a promotion pull request.' : c.promoteBlock) || '', onclick: () => openPromote(c) }) : null;
-              const verify = c.canVerify ? act('Verify signing', `/api/changes/${c.number}/verify-signing`, () => ({}), { can: true, confirm: 'Download the signed artifact and verify it against the merged files.', busy: 'Verifying...', done: r => (r.ok ? (r.already ? 'Signing was already verified.' : 'Signing verified.') : `Verification failed: ${(r.problems || []).join('; ')}`) }) : null;
+              const promote = c.published && !c.promote && !c.supersededBy ? el('button', { type: 'button', className: 'btn', textContent: 'Promote', disabled: !!wblock || !c.canPromote, title: wblock || (c.canPromote ? 'Check the canary evidence, then create a promotion pull request.' : c.promoteBlock) || '', onclick: ev => openPromote(c, ev.currentTarget) }) : null;
+              const verify = c.canVerify ? act('Verify signing', `/api/changes/${c.number}/verify-signing`, () => ({}), { can: true, confirm: 'Download the signed artifact and verify it against the merged files.', busy: 'Verifying signing…', done: r => (r.ok ? (r.already ? 'Signing was already verified.' : 'Signing verified.') : `Verification failed: ${(r.problems || []).join('; ')}`) }) : null;
               return el('span', {}, ...nodes([verify, verify && publish ? ' ' : null, publish, promote ? ' ' : null, promote]));
             }
             if (c.state !== 'open') return '';
             const edit = authorLink(`#update/${c.number}`, 'Edit');
-            const discard = el('button', { className: 'btn', textContent: 'Discard', disabled: !!block || !c.canEdit, title: block || (c.canEdit ? 'Close the pull request and delete its branch.' : 'Only the author or an admin can discard this change.') });
+            const discard = el('button', { type: 'button', className: 'btn', textContent: 'Discard', disabled: !!block || !c.canEdit, title: block || (c.canEdit ? 'Close the pull request and delete its branch.' : 'Only the author or an admin can discard this change.') });
             discard.onclick = async () => {
               if (discard.dataset.armed !== '1') { discard.dataset.armed = '1'; discard.textContent = 'Confirm discard'; return; }
-              discard.disabled = true; discard.textContent = 'Discarding...';
-              try { await api(`/api/changes/${c.number}/discard`, false, { method: 'POST', body: {} }); last = ''; await load(); }
-              catch (e) { msg.className = 'error'; msg.textContent = e.message; discard.disabled = false; discard.textContent = 'Discard'; delete discard.dataset.armed; }
+              discard.textContent = 'Discard'; delete discard.dataset.armed;
+              await busy(discard, 'Discarding…', async () => {
+                try { await api(`/api/changes/${c.number}/discard`, false, { method: 'POST', body: {} }); last = ''; await load(); }
+                catch (e) { msg.className = 'error'; msg.textContent = e.message; }
+              });
             };
             if (c.promote) { edit.setAttribute('aria-disabled', 'true'); edit.title = 'A promotion pull request cannot be edited. Discard it and promote again.'; edit.onclick = ev => ev.preventDefault(); }
     else if (!block && !c.canEdit) { edit.setAttribute('aria-disabled', 'true'); edit.title = 'Only the author or an admin can edit this change.'; edit.onclick = ev => ev.preventDefault(); }
             const sha = { headSha: c.headSha };
-            const approve = act('Approve', `/api/changes/${c.number}/approve`, () => sha, { can: c.canApprove, why: c.approveBlock, confirm: c.authorOid === session.me?.user?.oid ? 'You are the author: this is a self-approval, allowed only while four-eyes is in testing mode. Audited.' : 'Approve exactly this commit. A new commit voids the approval.', busy: 'Approving...', done: r => (r.already ? 'You already approved this commit.' : r.selfApproved ? 'Approved (self-approved, testing mode).' : 'Approved.') });
-            const reject = act('Reject', `/api/changes/${c.number}/reject`, reason => ({ headSha: c.headSha, reason }), { can: c.canReject, why: c.rejectBlock, confirm: 'Close the pull request with a reason. Audited.', busy: 'Rejecting...', ask: 'Reason', done: () => 'Rejected.' });
-            const merge = act('Merge', `/api/changes/${c.number}/merge`, () => sha, { can: c.canMerge, why: c.mergeBlock, confirm: 'Squash merge this exact commit into main. CI then signs it. Audited.', busy: 'Merging...', done: r => (r.branchUpdated ? r.message : r.already ? 'Already merged.' : `Merged. ${r.selfApproved ? 'Self-approved (testing mode). ' : ''}Signing starts now; use Verify signing when it finishes.`) });
+            const approve = act('Approve', `/api/changes/${c.number}/approve`, () => sha, { can: c.canApprove, why: c.approveBlock, confirm: c.authorOid === session.me?.user?.oid ? 'You are the author: this is a self-approval, allowed only while four-eyes is in testing mode. Audited.' : 'Approve exactly this commit. A new commit voids the approval.', busy: 'Approving…', done: r => (r.already ? 'You already approved this commit.' : r.selfApproved ? 'Approved (self-approved, testing mode).' : 'Approved.') });
+            const reject = act('Reject', `/api/changes/${c.number}/reject`, reason => ({ headSha: c.headSha, reason }), { can: c.canReject, why: c.rejectBlock, confirm: 'Close the pull request with a reason. Audited.', busy: 'Rejecting…', ask: 'Reason', done: () => 'Rejected.' });
+            const merge = act('Merge', `/api/changes/${c.number}/merge`, () => sha, { can: c.canMerge, why: c.mergeBlock, confirm: 'Squash merge this exact commit into main. CI then signs it. Audited.', busy: 'Merging…', done: r => (r.branchUpdated ? r.message : r.already ? 'Already merged.' : `Merged. ${r.selfApproved ? 'Self-approved (testing mode). ' : ''}Signing starts now; use Verify signing when it finishes.`) });
             return el('span', {}, edit, ' ', discard, ' ', approve, ' ', reject, ' ', merge);
           } },
         ], empty: 'No changes have been proposed through r360 yet.' });
@@ -421,5 +446,5 @@ export function createChangesUi({ el, pill, api, view, fmtTime, session }) {
     poll = setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
   }
 
-  return { new: () => form('new'), edit: key => form('edit', key), update: key => form('update', key), changes: changesView, stop, canAuthor, authorBlock, authorLink };
+  return { new: async arg => form('new', undefined, await chaosPreset(arg)), edit: key => form('edit', key), update: key => form('update', key), changes: changesView, stop, canAuthor, authorBlock, authorLink };
 }

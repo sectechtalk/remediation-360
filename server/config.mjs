@@ -80,6 +80,8 @@ export function loadConfig(rawEnv = process.env) {
     elevationTtlMinutes: ttl,
     emergencyWindowMinutes: Number(env.R360_EMERGENCY_WINDOW_MINUTES || 240),
     emergencyMaxDevices: Number(env.R360_EMERGENCY_MAX_DEVICES || 1),
+    // Offboard requests (Disable user everywhere, Remove from one app): off = the requester runs it; on = a second person must.
+    offboardFourEyes: oneOf(env.R360_OFFBOARD_FOUR_EYES, ['off', 'on'], 'off'),
     port: Number(env.PORT || 8080),
     host: env.HOST || '0.0.0.0',
     imageTag: env.R360_IMAGE_TAG || 'dev',
@@ -123,7 +125,7 @@ export function publicSettings(c) {
     repo: `${c.repo}@${c.branch}`, codesignThumbprint: c.codesignThumbprint, rootProfile: c.rootProfile, publisherProfile: c.publisherProfile,
     writeClientId: c.writeClientId || null, auditStorage: c.auditAccount, auditTable: c.auditTable, auditExportContainer: c.auditContainer,
     canaryDevice: c.canaryDevice, canaryGroupId: c.canaryGroupId || null, prodGroupId: c.prodGroupId || null, canarySoakDays: c.canarySoakDays, maxOpenChanges: c.maxOpenChanges, fourEyes: c.fourEyes, pimMode: c.pimMode, elevationTtlMinutes: c.elevationTtlMinutes,
-    emergencyWindowMinutes: c.emergencyWindowMinutes, emergencyMaxDevices: c.emergencyMaxDevices, imageTag: c.imageTag,
+    emergencyWindowMinutes: c.emergencyWindowMinutes, emergencyMaxDevices: c.emergencyMaxDevices, offboardFourEyes: c.offboardFourEyes, imageTag: c.imageTag,
     changeMailbox: c.changeMailbox || 'off', changeRepo: c.changeRepo, llmProvider: c.llm.provider, llmModel: c.llm.model || 'not set', llmApiKey: c.llm.apiKey ? 'set (Key Vault reference)' : c.llm.apiKeySecret ? `read from Key Vault secret ${c.llm.apiKeySecret}` : 'NOT set',
     deployTargets: c.deployTargets.length ? c.deployTargets.map(t => `${t.id} (${t.repo} ${t.workflow}, environment ${t.environment})`).join('; ') : 'none', deployFourEyes: 'off',
   };

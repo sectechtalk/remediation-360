@@ -14,7 +14,8 @@ export const ACTIONS = ['session.signin', 'session.elevate', 'session.elevate.de
   'change.approved', 'change.approval.denied', 'change.rejected', 'change.branchupdated', 'change.merged', 'sign.verified', 'sign.verify.failed', 'publish.canary', 'publish.denied', 'promote.proposed', 'promote.denied', 'publish.production',
   'deploy.merged', 'deploy.dispatched', 'deploy.run', 'request.created', 'request.synced', 'request.summarized', 'request.actions', 'request.closed', 'request.summaryrequested',
   'servicenow.query.saved', 'servicenow.query.deleted', 'emergency.requested', 'emergency.cancelled', 'emergency.rejected', 'emergency.approved',
-  'emergency.executed', 'emergency.failed', 'emergency.result', 'emergency.denied'];
+  'emergency.executed', 'emergency.failed', 'emergency.result', 'emergency.denied',
+  'offboard.requested', 'offboard.approved', 'offboard.step', 'offboard.completed', 'offboard.cancelled', 'offboard.denied'];
 
 // Only these fields are ever persisted. Anything else on an event is dropped, so a token or secret that ends up on an
 // event object by mistake cannot reach the audit store.

@@ -68,7 +68,9 @@ try {
             Fic = @{ name = 'r360-managed-identity'; issuer = "https://login.microsoftonline.com/$($cfg.TenantId)/v2.0"; subject = $mi.principalId }
             Access = @{
                 Graph    = $oidc + @('DeviceManagementScripts.ReadWrite.All', 'DeviceManagementConfiguration.ReadWrite.All', 'DeviceManagementManagedDevices.PrivilegedOperations.All',
-                    'DeviceManagementManagedDevices.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All')
+                    'DeviceManagementManagedDevices.Read.All', 'RoleManagement.Read.Directory', 'GroupMember.Read.All',
+                    # Offboard page: disable, revoke sessions, Provision on demand, remove an app assignment (delegated; the operator's Entra role still applies).
+                    'User.Read.All', 'User.EnableDisableAccount.All', 'User.RevokeSessions.All', 'Synchronization.ReadWrite.All', 'AppRoleAssignment.ReadWrite.All')
                 Defender = @('Machine.Read', 'Machine.ReadWrite', 'Machine.LiveResponse', 'Machine.Isolate', 'Machine.Scan', 'Machine.RestrictExecution',
                     'Machine.CollectForensics', 'Machine.StopAndQuarantine', 'Library.Manage', 'Ti.ReadWrite') } }
         @{ Name = $cfg.AppCiSigner; Redirect = @(); AssignRequired = $false

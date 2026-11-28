@@ -1,4 +1,5 @@
 import { renderTable } from './table.js';
+import { busyStatus } from './busy.js';
 
 // ServiceNow search: pick a preconfigured or saved query, or paste ServiceNow's encoded query, add free text, and see for
 // each item the r360 change request (GitHub issue) that mentions its number. The server decides and enforces everything.
@@ -8,10 +9,7 @@ export function createServiceNowUi({ el, api, view, fmtTime }) {
   let meta = null;
 
   const safeLink = (u, prefix, text) => (typeof u === 'string' && prefix && u.startsWith(prefix) ? el('a', { href: u, target: '_blank', rel: 'noopener', textContent: text }) : el('span', { textContent: text }));
-  const busy = async (b, msg, fn) => {
-    b.disabled = true; msg.replaceChildren(el('span', { className: 'muted', textContent: 'Working...' }));
-    try { await fn(); } catch (e) { msg.replaceChildren(el('span', { className: 'error', textContent: e.message })); } finally { b.disabled = false; }
-  };
+  const busy = (b, text, msg, fn) => busyStatus(b, text, msg, fn, el);
   const allQueries = () => [...(meta?.preconfigured || []), ...(meta?.saved || [])];
 
   function picker() {
@@ -35,7 +33,7 @@ export function createServiceNowUi({ el, api, view, fmtTime }) {
       if (r.issue === undefined) return el('span', { className: 'muted', textContent: 'unknown' });
       if (r.issue) return el('span', {}, safeLink(r.issue.url, GITHUB, r.issue.changeNumber), el('span', { className: 'muted', textContent: r.issue.state === 'open' ? '' : ' (closed)' }));
       const b = el('button', { className: 'btn', type: 'button', textContent: 'Create issue', disabled: !meta.canCreateIssue, title: meta.canCreateIssue ? `Open an r360 change request for ${r.number}` : 'Your approvers.json role does not allow this.' });
-      b.onclick = () => busy(b, msg, async () => {
+      b.onclick = () => busy(b, 'Creating the issue…', msg, async () => {
         const c = await api('/api/servicenow/issue', false, { method: 'POST', body: { table: r.table, sysId: r.sysId } });
         r.issue = { number: c.number, changeNumber: c.changeNumber, url: c.url, state: 'open' };
         b.replaceWith(safeLink(c.url, GITHUB, c.changeNumber));
@@ -85,7 +83,7 @@ export function createServiceNowUi({ el, api, view, fmtTime }) {
       del.hidden = !(q && q.kind === 'saved' && meta.canSave);
     };
     sel.onchange = () => { if (!sel.value) query.value = ''; sync(); };
-    const run = () => busy(go, msg, async () => {
+    const run = () => busy(go, 'Searching ServiceNow…', msg, async () => {
       const body = sel.value ? { queryId: sel.value, text: text.value } : { table: table.value, query: query.value, text: text.value };
       const d = await api('/api/servicenow/search', false, { method: 'POST', body });
       msg.replaceChildren();
@@ -93,13 +91,13 @@ export function createServiceNowUi({ el, api, view, fmtTime }) {
     });
     go.onclick = run;
     text.onkeydown = e => { if (e.key === 'Enter') run(); };
-    save.onclick = () => busy(save, msg, async () => {
+    save.onclick = () => busy(save, 'Saving…', msg, async () => {
       const q = await api('/api/servicenow/queries', false, { method: 'POST', body: { name: name.value, table: table.value, query: query.value } });
       meta.saved = [...meta.saved, q].sort((a, b) => a.name.localeCompare(b.name));
       const keep = q.id; const fresh = picker(); sel.replaceChildren(...fresh.childNodes); sel.value = keep; name.value = ''; sync();
       msg.replaceChildren(el('span', { className: 'ok', textContent: `Saved "${q.name}".` }));
     });
-    del.onclick = () => busy(del, msg, async () => {
+    del.onclick = () => busy(del, 'Deleting…', msg, async () => {
       const q = allQueries().find(x => x.id === sel.value);
       await api('/api/servicenow/queries/delete', false, { method: 'POST', body: { id: sel.value } });
       meta.saved = meta.saved.filter(x => x.id !== q.id);

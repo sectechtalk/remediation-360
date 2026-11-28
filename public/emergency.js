@@ -1,3 +1,4 @@
+import { busyStatus } from './busy.js';
 // Emergency (the fast path): ask for one Defender action on one device, a second person approves, r360 runs it in
 // Defender as the approver. The server decides and enforces everything; this page only shows state and sends requests.
 const DEFENDER_DEVICES = 'https://security.microsoft.com/machines';
@@ -8,10 +9,7 @@ const POLL_MS = 20000;
 export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
   let timer = null;
   const stop = () => { clearTimeout(timer); timer = null; };
-  const busy = async (b, msg, fn) => {
-    b.disabled = true; msg.replaceChildren(el('span', { className: 'muted', textContent: 'Working...' }));
-    try { await fn(); } catch (e) { msg.replaceChildren(el('span', { className: 'error', textContent: e.message })); } finally { b.disabled = false; }
-  };
+  const busy = (b, text, msg, fn) => busyStatus(b, text, msg, fn, el);
   const roles = () => session.me?.roles || [];
   const writing = () => Boolean(session.me?.write?.active);
   const me = () => session.me?.user?.oid;
@@ -21,7 +19,7 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
     const find = el('button', { className: 'btn', type: 'button', textContent: 'Search Defender' });
     const results = el('ul', { className: 'group-results' });
     const chosen = el('p', { className: 'muted', textContent: 'No device chosen yet.' });
-    let machine = preset ? { id: preset.machineId, name: preset.device } : null;
+    let machine = preset?.machineId ? { id: preset.machineId, name: preset.device } : null;
     if (machine) chosen.replaceChildren('Device: ', el('strong', { textContent: machine.name }));
     const action = el('select', {}, ...Object.entries(d.actions).map(([k, a]) => el('option', { value: k, textContent: `${a.label} (${a.plans.join(', ')})` })));
     if (preset?.action) action.value = preset.action;
@@ -45,7 +43,7 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
     };
     action.onchange = drawParams;
     drawParams();
-    find.onclick = () => busy(find, msg, async () => {
+    find.onclick = () => busy(find, 'Searching Defender…', msg, async () => {
       const r = await api(`/api/emergency/machines?q=${encodeURIComponent(q.value.trim())}`);
       msg.replaceChildren();
       results.replaceChildren(...(r.items.length ? r.items.map(m => {
@@ -54,7 +52,7 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
         return el('li', {}, b);
       }) : [el('li', { className: 'muted', textContent: 'Defender knows no device whose name starts with that.' })]));
     });
-    go.onclick = () => busy(go, msg, async () => {
+    go.onclick = () => busy(go, 'Sending the request…', msg, async () => {
       if (!machine) throw new Error('Search for the device and pick it first.');
       const p = Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.value]));
       const r = await api('/api/emergency', false, { method: 'POST', body: { machineId: machine.id, action: action.value, params: p, reason: reason.value } });
@@ -63,7 +61,7 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
       reload();
     });
     return el('div', { className: 'card emergency-form' },
-      el('h2', { textContent: preset ? 'Ask for the release' : 'Ask for an emergency action' }),
+      el('h2', { textContent: preset?.machineId ? 'Ask for the release' : preset ? 'Request from Federation 360' : 'Ask for an emergency action' }),
       el('ol', { className: 'promote-steps' },
         el('li', { className: 'promote-step' }, el('h3', { textContent: '1. Find the device in Defender' }), el('div', { className: 'toolbar' }, q, find), results, chosen),
         el('li', { className: 'promote-step' }, el('h3', { textContent: '2. Choose the action' }), action, about, params),
@@ -77,7 +75,7 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
     const canApprove = writing() && roles().includes('emergencyApprover') && e.state === 'pending' && (e.requesterOid !== me() || d.fourEyes === 'testing');
     if (canApprove) {
       const b = el('button', { className: 'btn', type: 'button', textContent: e.requesterOid === me() ? 'Approve my own request and run (testing mode)' : 'Approve and run now' });
-      b.onclick = () => busy(b, msg, async () => {
+      b.onclick = () => busy(b, 'Approving and running in Defender…', msg, async () => {
         const r = await api(`/api/emergency/${e.id}/approve`, false, { method: 'POST' });
         msg.replaceChildren(el('p', { className: 'ok', textContent: `Defender accepted it (${r.defenderStatus}).${r.selfApproved ? ' Self-approved in testing mode; recorded in the audit trail.' : ''}` }));
         reload();
@@ -87,12 +85,12 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
     if (writing() && ['pending', 'expired'].includes(e.state) && (e.requesterOid === me() || roles().includes('emergencyApprover'))) {
       const mine = e.requesterOid === me();
       const b = el('button', { className: 'btn', type: 'button', textContent: mine ? 'Cancel my request' : 'Reject' });
-      b.onclick = () => busy(b, msg, async () => { await api(`/api/emergency/${e.id}/close`, false, { method: 'POST', body: { reason: mine ? 'withdrawn by the requester' : 'rejected by an emergency approver' } }); reload(); });
+      b.onclick = () => busy(b, mine ? 'Cancelling…' : 'Rejecting…', msg, async () => { await api(`/api/emergency/${e.id}/close`, false, { method: 'POST', body: { reason: mine ? 'withdrawn by the requester' : 'rejected by an emergency approver' } }); reload(); });
       buttons.push(b);
     }
     if (writing() && e.machineActionId) {
       const b = el('button', { className: 'btn', type: 'button', textContent: 'Check status in Defender' });
-      b.onclick = () => busy(b, msg, async () => { const r = await api(`/api/emergency/${e.id}/refresh`, false, { method: 'POST' }); msg.replaceChildren(el('span', { textContent: `Defender says: ${r.defenderStatus}` })); if (r.final) reload(); });
+      b.onclick = () => busy(b, 'Checking Defender…', msg, async () => { const r = await api(`/api/emergency/${e.id}/refresh`, false, { method: 'POST' }); msg.replaceChildren(el('span', { textContent: `Defender says: ${r.defenderStatus}` })); if (r.final) reload(); });
       buttons.push(b);
     }
     const release = d.actions[e.action]?.release;
@@ -118,8 +116,18 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
       buttons.length ? el('div', { className: 'toolbar' }, ...buttons) : null, msg);
   }
 
-  async function page() {
+  // Federation 360 opens #emergency/device?name=<device>&action=isolate to contain a leaver's device.
+  const devicePreset = arg => {
+    const m = /^device\?(.*)$/.exec(String(arg || ''));
+    if (!m) return null;
+    const q = new URLSearchParams(m[1]);
+    const name = (q.get('name') || '').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{1,62}$/.test(name)) return null;
+    return { device: name, action: q.get('action') || 'isolate' };
+  };
+  async function page(arg) {
     stop();
+    const preset = devicePreset(arg);
     const top = el('div');
     const body = el('div', {}, el('p', { className: 'muted', textContent: 'Loading...' }));
     view().replaceChildren(
@@ -147,7 +155,7 @@ export function createEmergencyUi({ el, pill, api, view, fmtTime, session }) {
           top.replaceChildren(el('div', { className: 'card' }, el('h2', { textContent: 'Defender connection' }), ready));
           api('/api/emergency/readiness').then(r => {
             ready.className = r.ok ? 'ok' : 'error'; ready.textContent = r.text;
-            if (r.ok && roles().some(x => REQUEST_ROLES.includes(x))) top.append(requestForm(d, load));
+            if (r.ok && roles().some(x => REQUEST_ROLES.includes(x))) top.append(requestForm(d, load, preset && d.actions[preset.action] ? preset : preset ? { ...preset, action: 'isolate' } : null));
           }).catch(e => { ready.className = 'error'; ready.textContent = e.message; });
         }
       }

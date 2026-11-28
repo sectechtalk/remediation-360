@@ -13,17 +13,24 @@ export function sectionKey(text) {
   return String(text || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-export function installNavSections(nav, storage, storageKey = NAV_COLLAPSE_KEY) {
-  const collapsed = new Set(readCollapsed(storage, storageKey));
+export function installNavSections(nav, storage, storageKey = NAV_COLLAPSE_KEY, { defaultCollapsed = false } = {}) {
+  // `remembered` holds closed sections normally, or opened sections when defaultCollapsed.
+  const remembered = new Set(readCollapsed(storage, storageKey));
+  const shownNow = new Set(); // opened for the current page only (defaultCollapsed), never saved
+  const isClosed = key => (defaultCollapsed ? !remembered.has(key) && !shownNow.has(key) : remembered.has(key));
+  const setClosed = (key, closed) => {
+    shownNow.delete(key);
+    if (closed === defaultCollapsed) remembered.delete(key); else remembered.add(key);
+  };
   const labels = [...nav.querySelectorAll('.nav-label')];
   const itemsOf = label => {
     const out = [];
     for (let el = label.nextElementSibling; el && !el.classList.contains('nav-label'); el = el.nextElementSibling) out.push(el);
     return out;
   };
-  const save = () => { try { storage?.setItem(storageKey, JSON.stringify([...collapsed])); } catch { /* storage unavailable */ } };
+  const save = () => { try { storage?.setItem(storageKey, JSON.stringify([...remembered])); } catch { /* storage unavailable */ } };
   const apply = label => {
-    const closed = collapsed.has(label.dataset.section);
+    const closed = isClosed(label.dataset.section);
     label.setAttribute('aria-expanded', String(!closed));
     label.title = `${closed ? 'Expand' : 'Collapse'} ${label.textContent.trim()}`;
     for (const el of itemsOf(label)) el.classList.toggle('nav-collapsed', closed);
@@ -34,7 +41,7 @@ export function installNavSections(nav, storage, storageKey = NAV_COLLAPSE_KEY) 
     const native = label.tagName === 'BUTTON';
     if (!native) { label.setAttribute('role', 'button'); label.tabIndex = 0; }
     if (!label.querySelector('.nav-chevron')) label.insertAdjacentHTML('beforeend', '<span class="nav-chevron" aria-hidden="true"></span>');
-    const toggle = () => { if (collapsed.has(key)) collapsed.delete(key); else collapsed.add(key); apply(label); save(); };
+    const toggle = () => { setClosed(key, !isClosed(key)); apply(label); save(); };
     label.addEventListener('click', toggle);
     // A native button already turns Enter and Space into a click.
     if (!native) label.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(); } });
@@ -44,7 +51,13 @@ export function installNavSections(nav, storage, storageKey = NAV_COLLAPSE_KEY) 
   const expandItem = item => {
     let el = item?.previousElementSibling;
     while (el && !el.classList.contains('nav-label')) el = el.previousElementSibling;
-    if (el && collapsed.has(el.dataset.section)) { collapsed.delete(el.dataset.section); apply(el); save(); }
+    if (defaultCollapsed) {
+      // Only the current page's section is opened for you: the one opened for the previous page closes again.
+      for (const key of [...shownNow]) if (key !== el?.dataset.section) { shownNow.delete(key); const l = labels.find(x => x.dataset.section === key); if (l) apply(l); }
+    }
+    if (!el || !isClosed(el.dataset.section)) return;
+    if (defaultCollapsed) shownNow.add(el.dataset.section); else { remembered.delete(el.dataset.section); save(); }
+    apply(el);
   };
   return {
     expandFor: view => expandItem(nav.querySelector(`[data-view="${view}"]`)),

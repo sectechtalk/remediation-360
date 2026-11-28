@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { ConfidentialClientApplication, CryptoProvider } from '@azure/msal-node';
 import { FIC_AUDIENCE } from './identity.mjs';
 import { DEFENDER_SCOPES } from './defender.mjs';
+import { OFFBOARD_SCOPES } from './offboard.mjs';
 
 // Entra-only sign-in to r360-web: auth code + PKCE, server-side confidential client whose client assertion is a
 // managed-identity token (federated identity credential). No secret, certificate or key. Tokens stay in server memory.
@@ -155,6 +156,17 @@ export function createAuth({ config, miToken, msal = {} }) {
       catch (e) {
         const consent = /AADSTS65001|consent/i.test(String(e.errorMessage || e.message));
         throw Object.assign(new Error(consent ? 'r360-write has no admin consent for Microsoft Defender for Endpoint. Run tools\\New-R360AppRegistration.ps1 on DEVICE02, then elevate again.' : 'Microsoft Entra did not issue a Defender token for your write session. End the write session and elevate again.'), { status: 403 });
+      }
+    },
+    // Offboard requests: the same write sign-in, silently exchanged for the Graph identity-write scopes. Fails closed with
+    // the fix when r360-write has no consent for them yet.
+    async offboardToken(homeAccountId) {
+      const account = writeCca && await writeCca.getTokenCache().getAccountByHomeId(homeAccountId);
+      if (!account) throw Object.assign(new Error('The write session is gone. Elevate again.'), { status: 403 });
+      try { return (await writeCca.acquireTokenSilent({ account, scopes: OFFBOARD_SCOPES })).accessToken; }
+      catch (e) {
+        const consent = /AADSTS65001|consent/i.test(String(e.errorMessage || e.message));
+        throw Object.assign(new Error(consent ? 'r360-write has no admin consent for the offboard permissions yet. Run tools\\Add-R360OffboardPermissions.ps1, then end the write session and elevate again.' : 'Microsoft Entra did not issue a token for offboarding. End the write session and elevate again.'), { status: 403 });
       }
     },
     async endWrite(homeAccountId) { await removeAccount(writeCca, homeAccountId); },
